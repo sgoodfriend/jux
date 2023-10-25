@@ -100,7 +100,8 @@ class Board(NamedTuple):
         factory_overlap = factory_overlap.reshape(batch_shape + (-1, 2))  # int[..., 2 * MAX_N_FACTORIES * 85, 2]
         factory_overlap = jnp.clip(factory_overlap, 0, jnp.array([self.height - 1, self.width - 1]))
 
-        batch_idx = tuple(slice(None, b) for b in batch_shape)
+        # TODO: Support batch_shape being longer than 1
+        batch_idx = tuple(jnp.expand_dims(jnp.arange(bs), -1) for bs in batch_shape)
         valid_spawns_mask = valid_spawns_mask.at[(*batch_idx, factory_overlap[..., 0], factory_overlap[..., 1])]\
                                              .set(False,mode='drop')
         return valid_spawns_mask
