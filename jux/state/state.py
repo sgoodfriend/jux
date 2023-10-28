@@ -16,6 +16,7 @@ from jux.factory import Factory, LuxFactory
 from jux.map import Board
 from jux.map.position import Direction, Position, direct2delta_xy
 from jux.team import FactionTypes, LuxTeam, Team
+from jux.unified_actions import UnifiedAction
 from jux.unit import ActionQueue, LuxUnit, Unit, UnitCargo, UnitType
 from jux.unit_cargo import ResourceType
 from jux.utils import INT32_MAX, imax
@@ -799,6 +800,17 @@ class State(NamedTuple):
         self = self._replace(env_steps=self.env_steps + 1)
 
         return self
+
+    def _step_unified(self, action: UnifiedAction) -> 'State':
+
+        def step_factory_placement(self: 'State', action: UnifiedAction) -> 'State':
+            return self._step_factory_placement(*action.factory_placement_action)
+
+        def step_late_game(self: 'State', action: UnifiedAction) -> 'State':
+            return self._step_late_game(action.late_game_action)
+
+        return jax.lax.cond((self.teams.factories_to_place > 0).any(), step_factory_placement, step_late_game,
+                            *(self, action))
 
     def _validate_transfer_actions(self, actions: UnitAction):
         valid = (actions.action_type == UnitActionType.TRANSFER)
