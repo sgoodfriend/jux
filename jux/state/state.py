@@ -809,8 +809,7 @@ class State(NamedTuple):
         def step_late_game(self: 'State', action: UnifiedAction) -> 'State':
             return self._step_late_game(action.late_game_action)
 
-        return jax.lax.cond((self.teams.factories_to_place > 0).any(), step_factory_placement, step_late_game,
-                            *(self, action))
+        return jax.lax.cond(self.real_env_steps < 0, step_factory_placement, step_late_game, *(self, action))
 
     def _validate_transfer_actions(self, actions: UnitAction):
         valid = (actions.action_type == UnitActionType.TRANSFER)
