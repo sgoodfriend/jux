@@ -217,14 +217,15 @@ class JuxEnvBatch:
     def __eq__(self, __o: object) -> bool:
         return isinstance(__o, JuxEnvBatch) and self.env_cfg == __o.env_cfg and self.buf_cfg == __o.buf_cfg
 
-    @partial(jax.jit, static_argnums=(0, ))
-    def reset(self, seeds: Array) -> Tuple[State, Tuple[Dict, int, bool, Dict]]:
+    @partial(jax.jit, static_argnums=(0, 2))
+    def reset(self, seeds: Array, same_factories_per_team: bool = True) -> Tuple[State, Tuple[Dict, int, bool, Dict]]:
         states = jax.vmap(self.jux_env.reset)(seeds)
 
-        # for env in the same batch, they must have same state.board.factories_per_team,
-        # so that they have same number of steps to place factory
-        factories_per_team = states.board.factories_per_team.at[:].set(states.board.factories_per_team[0])
-        states = states._replace(board=states.board._replace(factories_per_team=factories_per_team))
+        if same_factories_per_team:
+            # If same_factories_per_team True, set same
+            # state.board.factories_per_team. Necessary if not using step_uniform
+            factories_per_team = states.board.factories_per_team.at[:].set(states.board.factories_per_team[0])
+            states = states._replace(board=states.board._replace(factories_per_team=factories_per_team))
         return states
 
     @partial(jax.jit, static_argnums=(0, ))
