@@ -156,6 +156,7 @@ class JuxEnv:
 
         return state, (observations, rewards, dones, infos)
 
+    @partial(jax.jit, static_argnums=(0, ))
     def step_unified(self, state: State, actions: UnifiedAction) -> Tuple[State, Tuple[Dict, Array, Array, Dict]]:
         state = state._step_unified(actions)
         observations = {'player_0': state, 'player_1': state}
