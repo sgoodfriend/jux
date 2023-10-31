@@ -21,8 +21,8 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
-    "luxai-s2==3.0.0",
     "jax[cuda11_cudnn82]==0.4.7",
+    "luxai-s2==3.0.1",
     "chex",
 ]
 dynamic = ["version"]
