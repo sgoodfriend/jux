@@ -143,15 +143,15 @@ class JuxEnv:
         # perfect info game, so observations = state
         observations = {'player_0': state, 'player_1': state}
 
-        # rewards = lichen, unless if player loses all factories, then -1000
-        rewards = jnp.where(state.n_factories > 0, state.team_lichen_score(), -1000)
-
         # info is empty
         infos = {'player_0': {}, 'player_1': {}}
 
         # done if one player loses all factories or max_episode_length is reached
         dones = (state.n_factories == 0).any() | (state.real_env_steps >= self.env_cfg.max_episode_length)
         dones = jnp.array([dones, dones])
+
+        # rewards = lichen, unless if player loses all factories, then -1000
+        rewards = jnp.where(jnp.logical_and(dones, state.n_factories == 0), -1000, state.team_lichen_score())
 
         return state, (observations, rewards, dones, infos)
 
