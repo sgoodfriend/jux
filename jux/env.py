@@ -160,11 +160,11 @@ class JuxEnv:
     def step_unified(self, state: State, actions: UnifiedAction) -> Tuple[State, Tuple[Dict, Array, Array, Dict]]:
         state = state._step_unified(actions)
         observations = {'player_0': state, 'player_1': state}
-        rewards = jnp.where(state.n_factories > 0, state.team_lichen_score(), -1000)
-        infos = {'player_0': {}, 'player_1': {}}
         dones = jnp.logical_or(
             jnp.logical_and(state.n_factories == 0, state.teams.factories_to_place == 0).any(),
             state.real_env_steps >= self.env_cfg.max_episode_length)
+        rewards = jnp.where(jnp.logical_and(dones, state.n_factories == 0), -1000, state.team_lichen_score())
+        infos = {'player_0': {}, 'player_1': {}}
         dones = jnp.array([dones, dones])
         return state, (observations, rewards, dones, infos)
 
