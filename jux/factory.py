@@ -7,6 +7,7 @@ from luxai_s2.team import Team as LuxTeam
 
 from jux.config import EnvConfig
 from jux.map.position import Position, direct2delta_xy
+from jux.stats import GenerationStats
 from jux.unit import ResourceType, Unit, UnitCargo
 from jux.utils import INT32_MAX, imax
 
@@ -119,7 +120,7 @@ class Factory(NamedTuple):
         lux_factory.cargo = self.cargo.to_lux()
         return lux_factory
 
-    def refine_step(self, env_cfg: EnvConfig) -> "Factory":
+    def refine_step(self, env_cfg: EnvConfig, generation_stats: GenerationStats) -> Tuple["Factory", GenerationStats]:
         max_consumed_ice = jnp.minimum(self.cargo.ice, env_cfg.FACTORY_PROCESSING_RATE_WATER)
         max_consumed_ore = jnp.minimum(self.cargo.ore, env_cfg.FACTORY_PROCESSING_RATE_METAL)
         # permit refinement of blocks of resources, no floats.
@@ -137,7 +138,11 @@ class Factory(NamedTuple):
         )  # int[..., 4]
 
         new_stock = self.cargo.stock + stock_change
-        return self._replace(cargo=UnitCargo(new_stock))
+        return (self._replace(cargo=UnitCargo(new_stock)),
+                generation_stats._replace(
+                    water=generation_stats.water + produced_water.sum(1),
+                    metal=generation_stats.metal + produced_metal.sum(1),
+                ))
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, Factory):

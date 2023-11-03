@@ -56,7 +56,7 @@ class JuxEnv:
             'player_1': state,
         }
         rewards = jnp.zeros(2)
-        infos = {'player_0': {}, 'player_1': {}}
+        infos = {"stats": state.stats}
 
         dones = jnp.zeros(2, dtype=jnp.bool_)
 
@@ -92,7 +92,7 @@ class JuxEnv:
         # perfect info game, so observations = state
         observations = {'player_0': state, 'player_1': state}
         rewards = jnp.zeros(2)
-        infos = {'player_0': {}, 'player_1': {}}
+        infos = {"stats": state.stats}
 
         dones = jnp.zeros(2, dtype=jnp.bool_)
 
@@ -145,7 +145,7 @@ class JuxEnv:
         observations = {'player_0': state, 'player_1': state}
 
         # info is empty
-        infos = {'player_0': {}, 'player_1': {}}
+        infos = {"stats": state.stats}
 
         # done if one player loses all factories or max_episode_length is reached
         dones = (state.n_factories == 0).any() | (state.real_env_steps >= self.env_cfg.max_episode_length)
@@ -164,7 +164,7 @@ class JuxEnv:
             jnp.logical_and(state.n_factories == 0, state.teams.factories_to_place == 0).any(),
             state.real_env_steps >= self.env_cfg.max_episode_length)
         rewards = jnp.where(jnp.logical_and(dones, state.n_factories == 0), -1000, state.team_lichen_score())
-        infos = {'player_0': {}, 'player_1': {}}
+        infos = {"stats": state.stats}
         dones = jnp.array([dones, dones])
         return state, (observations, rewards, dones, infos)
 

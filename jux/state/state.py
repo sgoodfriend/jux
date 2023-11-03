@@ -15,6 +15,7 @@ from jux.config import EnvConfig, JuxBufferConfig
 from jux.factory import Factory, LuxFactory
 from jux.map import Board
 from jux.map.position import Direction, Position, direct2delta_xy
+from jux.stats import ResourceStats, Stats
 from jux.team import FactionTypes, LuxTeam, Team
 from jux.unified_actions import UnifiedAction
 from jux.unit import ActionQueue, LuxUnit, Unit, UnitCargo, UnitType
@@ -80,6 +81,8 @@ class State(NamedTuple):
 
     global_id: Unit.id_dtype() = Unit.id_dtype()(0)  # int16
     place_first: jnp.int8 = jnp.int8(0)  # 0/1, the player to place first
+
+    stats: Stats = Stats.empty()
 
     @property
     def MAX_N_FACTORIES(self):
@@ -761,11 +764,11 @@ class State(NamedTuple):
         ))
 
         # resources refining
-        factories = self.factories.refine_step(self.env_cfg)
+        factories, generation_stats = self.factories.refine_step(self.env_cfg, self.stats.generation)
         water_cost = self.env_cfg.FACTORY_WATER_CONSUMPTION * self.factory_mask
         stock = factories.cargo.stock.at[..., ResourceType.water].add(-water_cost)
         factories = factories._replace(cargo=factories.cargo._replace(stock=stock))
-        self = self._replace(factories=factories)
+        self = self._replace(factories=factories, stats=self.stats._replace(generation=generation_stats))
 
         # factories gain power
         delta_power = self.env_cfg.FACTORY_CHARGE + connected_lichen_size * self.env_cfg.POWER_PER_CONNECTED_LICHEN_TILE
@@ -797,7 +800,8 @@ class State(NamedTuple):
         '''
 
         # update step number
-        self = self._replace(env_steps=self.env_steps + 1)
+        self = self._replace(env_steps=self.env_steps + 1,
+                             stats=self.stats._replace(resources=ResourceStats.from_state(self)))
 
         return self
 
@@ -889,7 +893,7 @@ class State(NamedTuple):
             cargo=UnitCargo(unit_stock),
             power=unit_power,
         )
-        self = self._replace(units=units)
+        self = self._replace(units=units, stats=self.stats._replace(resources=ResourceStats.from_state(self)))
 
         return self
         # pytype: enable=attribute-error
@@ -1043,19 +1047,23 @@ class State(NamedTuple):
 
         # ice
         dig_ice = valid & ~dig_rubble & ~dig_lichen & self.board.ice[x, y]
-        units, _ = add_resource(units, ResourceType.ice, dig_resource_gain * dig_ice, self.env_cfg.ROBOTS)
+        ice_gained = dig_resource_gain * dig_ice
+        units, _ = add_resource(units, ResourceType.ice, ice_gained, self.env_cfg.ROBOTS)
 
         # ore
         dig_ore = valid & ~dig_rubble & ~dig_lichen & ~dig_ice & (self.board.ore[x, y] > 0)
-        units, _ = add_resource(units, ResourceType.ore, dig_resource_gain * dig_ore, self.env_cfg.ROBOTS)
+        ore_gained = dig_resource_gain * dig_ore
+        units, _ = add_resource(units, ResourceType.ore, ore_gained, self.env_cfg.ROBOTS)
 
-        new_self = self._replace(
-            units=units,
-            board=self.board._replace(
-                map=self.board.map._replace(rubble=new_rubble),
-                lichen=new_lichen,
-            ),
-        )
+        new_self = self._replace(units=units,
+                                 board=self.board._replace(
+                                     map=self.board.map._replace(rubble=new_rubble),
+                                     lichen=new_lichen,
+                                 ),
+                                 stats=self.stats._replace(generation=self.stats.generation._replace(
+                                     ice=self.stats.generation.ice + ice_gained.sum(1),
+                                     ore=self.stats.generation.ore + ore_gained.sum(1),
+                                 )))
         return new_self
 
     def _validate_self_destruct_actions(self: 'State', actions: UnitAction) -> Array:
