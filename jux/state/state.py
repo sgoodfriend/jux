@@ -1164,6 +1164,10 @@ class State(NamedTuple):
             unit_id2idx=State.generate_unit_id2idx(new_units, self.MAX_GLOBAL_ID),
             board=self.board.update_units_map(new_units),
             global_id=self.global_id + n_new_units.sum(dtype=n_new_units.dtype),
+            stats=self.stats._replace(generation=self.stats.generation._replace(
+                light_bots=self.stats.generation.light_bots + is_build_light.sum(1),
+                heavy_bots=self.stats.generation.heavy_bots + is_build_heavy.sum(1),
+            )),
         )
 
     def _validate_movement_actions(self, actions: UnitAction) -> Tuple[Array, Array]:

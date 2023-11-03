@@ -12,6 +12,8 @@ class GenerationStats(NamedTuple):
     ore: jax.Array  # int[2]
     water: jax.Array  # int[2]
     metal: jax.Array  # int[2]
+    light_bots: jax.Array  # int[2]
+    heavy_bots: jax.Array  # int[2]
 
     @classmethod
     def empty(cls):
@@ -20,6 +22,8 @@ class GenerationStats(NamedTuple):
             ore=jnp.zeros((2, ), dtype=jnp.int32),
             water=jnp.zeros((2, ), dtype=jnp.int32),
             metal=jnp.zeros((2, ), dtype=jnp.int32),
+            light_bots=jnp.zeros((2, ), dtype=jnp.int32),
+            heavy_bots=jnp.zeros((2, ), dtype=jnp.int32),
         )
 
 
