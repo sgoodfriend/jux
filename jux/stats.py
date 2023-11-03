@@ -45,7 +45,7 @@ class ResourceStats(NamedTuple):
             lichen=state.team_lichen_score(),
             light_bots=jnp.logical_and(bots, state.units.unit_type == UnitType.LIGHT).sum(1),
             heavy_bots=jnp.logical_and(bots, state.units.unit_type == UnitType.HEAVY).sum(1),
-            factories=state.teams.n_factory,
+            factories=state.n_factories,
         )
 
 
