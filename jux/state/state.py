@@ -628,6 +628,7 @@ class State(NamedTuple):
         self = self._replace(
             teams=teams,
             env_steps=self.env_steps + 1,
+            stats=self.stats._replace(resources=ResourceStats.from_state(self)),
         )
         return self
 
@@ -893,7 +894,7 @@ class State(NamedTuple):
             cargo=UnitCargo(unit_stock),
             power=unit_power,
         )
-        self = self._replace(units=units, stats=self.stats._replace(resources=ResourceStats.from_state(self)))
+        self = self._replace(units=units)
 
         return self
         # pytype: enable=attribute-error

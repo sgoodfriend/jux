@@ -35,7 +35,7 @@ class ResourceStats(NamedTuple):
             lichen=jnp.zeros((2, ), dtype=jnp.int32),
             light_bots=jnp.zeros((2, ), dtype=jnp.int32),
             heavy_bots=jnp.zeros((2, ), dtype=jnp.int32),
-            factories=jnp.zeros((2, ), dtype=jnp.int32),
+            factories=jnp.zeros((2, ), dtype=jnp.int8),
         )
 
     @classmethod
