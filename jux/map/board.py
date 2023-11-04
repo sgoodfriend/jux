@@ -19,6 +19,10 @@ delta_xy = jnp.array(jnp.nonzero(jnp.abs(delta_xy[0]) + jnp.abs(delta_xy[1]) <= 
 delta_xy = delta_xy - jnp.array([radius, radius])
 delta_xy = delta_xy.astype(Position.dtype())
 
+compact_radius = 3
+compact_delta_xy = jnp.mgrid[-compact_radius:compact_radius + 1,
+                             -compact_radius:compact_radius + 1].reshape(2, -1).T.astype(Position.dtype())
+
 Unit_id_dtype = jnp.int16
 Factory_id_dtype = jnp.int8
 
@@ -96,7 +100,8 @@ class Board(NamedTuple):
         valid_spawns_mask = valid_spawns_mask.at[..., :, [0, -1]].set(False)
 
         batch_shape = valid_spawns_mask.shape[:-2]
-        factory_overlap = self.factory_pos[..., None, :] + delta_xy  # int[..., 2 * MAX_N_FACTORIES, 85, 2]
+        # TODO: Revert to using delta_xy closer to submission
+        factory_overlap = self.factory_pos[..., None, :] + compact_delta_xy  # int[..., 2 * MAX_N_FACTORIES, 85, 2]
         factory_overlap = factory_overlap.reshape(batch_shape + (-1, 2))  # int[..., 2 * MAX_N_FACTORIES * 85, 2]
         factory_overlap = jnp.clip(factory_overlap, 0, jnp.array([self.height - 1, self.width - 1]))
 
