@@ -772,9 +772,13 @@ class State(NamedTuple):
         self = self._replace(factories=factories, stats=self.stats._replace(generation=generation_stats))
 
         # factories gain power
-        delta_power = self.env_cfg.FACTORY_CHARGE + connected_lichen_size * self.env_cfg.POWER_PER_CONNECTED_LICHEN_TILE
-        new_factory_power = self.factories.power + jnp.where(self.factory_mask, delta_power, 0)
-        self = self._replace(factories=self.factories._replace(power=new_factory_power))
+        delta_power = jnp.where(
+            self.factory_mask,
+            self.env_cfg.FACTORY_CHARGE + connected_lichen_size * self.env_cfg.POWER_PER_CONNECTED_LICHEN_TILE, 0)
+        new_factory_power = self.factories.power + delta_power
+        self = self._replace(factories=self.factories._replace(power=new_factory_power),
+                             stats=self.stats._replace(generation=self.stats.generation._replace(
+                                 power=self.stats.generation.power + delta_power.sum(1))))
 
         # destroy factories without water
         factories_to_destroy = (self.factories.cargo.water < 0)  # noqa
@@ -786,12 +790,17 @@ class State(NamedTuple):
             new_units = new_units._replace(power=new_units.power * self.unit_mask)
             return new_units
 
-        self = self._replace(units=jax.lax.cond(
+        before_charge_unit_power = self.units.power
+        charged_units = jax.lax.cond(
             is_day(self.env_cfg, real_env_steps),
             _gain_power,
             lambda self: self.units,
             self,
-        ))
+        )
+        self = self._replace(
+            units=charged_units,
+            stats=self.stats._replace(generation=self.stats.generation._replace(
+                power=self.stats.generation.power + (charged_units.power - before_charge_unit_power).sum(1))))
         '''
         # this if statement is same as above jax.lax.cond
         if is_day(self.env_cfg, real_env_steps):
