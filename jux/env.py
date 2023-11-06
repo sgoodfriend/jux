@@ -6,6 +6,7 @@ import jax.numpy as jnp
 from jax import Array
 from luxai_s2 import LuxAI_S2
 
+from jux import stats
 from jux.actions import JuxAction
 from jux.config import EnvConfig, JuxBufferConfig
 from jux.state import State
@@ -48,6 +49,7 @@ class JuxEnv:
             dones (Array): bool[2], done indicator. If game ends, then `dones[0] == dones[1] == True`
             infos (Dict): empty dict, because there is no extra info.
         """
+        old_stats = state.stats
         state = state._step_bid(bid, faction)
 
         # perfect info game, so observations = state
@@ -56,7 +58,7 @@ class JuxEnv:
             'player_1': state,
         }
         rewards = jnp.zeros(2)
-        infos = {"stats": state.stats}
+        infos = infos_from_state(state, old_stats)
 
         dones = jnp.zeros(2, dtype=jnp.bool_)
 
@@ -87,12 +89,13 @@ class JuxEnv:
             dones (Array): bool[2], done indicator. If game ends, then `dones[0] == dones[1] == True`
             infos (Dict): empty dict, because there is no extra info.
         """
+        old_stats = state.stats
         state = state._step_factory_placement(spawn, water, metal)
 
         # perfect info game, so observations = state
         observations = {'player_0': state, 'player_1': state}
         rewards = jnp.zeros(2)
-        infos = {"stats": state.stats}
+        infos = infos_from_state(state, old_stats)
 
         dones = jnp.zeros(2, dtype=jnp.bool_)
 
@@ -139,13 +142,14 @@ class JuxEnv:
             dones (Array): bool[2], done indicator. If game ends, then `dones[0] == dones[1] == True`
             infos (Dict): empty dict, because there is no extra info.
         """
+        old_stats = state.stats
         state = state._step_late_game(actions)
 
         # perfect info game, so observations = state
         observations = {'player_0': state, 'player_1': state}
 
         # info is empty
-        infos = {"stats": state.stats}
+        infos = infos_from_state(state, old_stats)
 
         # done if one player loses all factories or max_episode_length is reached
         dones = (state.n_factories == 0).any() | (state.real_env_steps >= self.env_cfg.max_episode_length)
@@ -158,13 +162,14 @@ class JuxEnv:
 
     @partial(jax.jit, static_argnums=(0, ))
     def step_unified(self, state: State, actions: UnifiedAction) -> Tuple[State, Tuple[Dict, Array, Array, Dict]]:
+        old_stats = state.stats
         state = state._step_unified(actions)
         observations = {'player_0': state, 'player_1': state}
         dones = jnp.logical_or(
             jnp.logical_and(state.n_factories == 0, state.teams.factories_to_place == 0).any(),
             state.real_env_steps >= self.env_cfg.max_episode_length)
         rewards = jnp.where(jnp.logical_and(dones, state.n_factories == 0), -1000, state.team_lichen_score())
-        infos = {"stats": state.stats}
+        infos = infos_from_state(state, old_stats)
         dones = jnp.array([dones, dones])
         return state, (observations, rewards, dones, infos)
 
@@ -196,6 +201,14 @@ class JuxEnv:
             state (State): The current game state.
         """
         return JuxEnv(EnvConfig.from_lux(lux_env.env_cfg), buf_cfg), State.from_lux(lux_env.state, buf_cfg)
+
+
+@jax.jit
+def infos_from_state(state: State, old_stats: stats) -> Dict:
+    return {
+        "stats": state.stats,
+        "delta_stats": jax.tree_util.tree_map(lambda new_a, old_a: new_a - old_a, state.stats, old_stats),
+    }
 
 
 class JuxEnvBatch:
