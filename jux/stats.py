@@ -53,13 +53,27 @@ class ResourceStats(NamedTuple):
         )
 
 
+class ActionStats(NamedTuple):
+    queue_update_success: jax.Array  # int[2]
+    queue_update_total: jax.Array  # int[2]
+
+    @classmethod
+    def empty(cls):
+        return cls(
+            queue_update_success=jnp.zeros((2, ), dtype=jnp.int32),
+            queue_update_total=jnp.zeros((2, ), dtype=jnp.int32),
+        )
+
+
 class Stats(NamedTuple):
     generation: GenerationStats  # GenerationStats[2]
     resources: ResourceStats  # ResourceStats[2]
+    actions: ActionStats  # ActionStats[2]
 
     @classmethod
     def empty(cls):
         return cls(
             generation=GenerationStats.empty(),
             resources=ResourceStats.empty(),
+            actions=ActionStats.empty(),
         )
