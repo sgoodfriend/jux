@@ -105,5 +105,5 @@ class Stats(NamedTuple):
     def epsilon(cls, **kwargs):
         kwargs_not_in_cls = [k for k in kwargs if k not in cls._fields]
         assert not kwargs_not_in_cls, f"{kwargs_not_in_cls} not in {cls.__name__}"
-        kwargs = {_f: _type.epsilon(kwargs.get(_f, {})) for _f, _type in cls._field_types.items()}
+        kwargs = {_f: _type.epsilon(**kwargs.get(_f, {})) for _f, _type in cls._field_types.items()}
         return cls(**kwargs)
