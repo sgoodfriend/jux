@@ -45,6 +45,7 @@ class ResourceStats(NamedTuple):
     light_bots: jax.Array  # int[2]
     heavy_bots: jax.Array  # int[2]
     factories: jax.Array  # int[2]
+    water_in_factories: jax.Array  # int[2]
 
     @classmethod
     def empty(cls):
@@ -53,6 +54,7 @@ class ResourceStats(NamedTuple):
             light_bots=jnp.zeros((2, ), dtype=jnp.int32),
             heavy_bots=jnp.zeros((2, ), dtype=jnp.int32),
             factories=jnp.zeros((2, ), dtype=jnp.int8),
+            water_in_factories=jnp.zeros((2, ), dtype=jnp.int32),
         )
 
     @classmethod
@@ -63,6 +65,8 @@ class ResourceStats(NamedTuple):
             light_bots=jnp.logical_and(bots, state.units.unit_type == UnitType.LIGHT).sum(1),
             heavy_bots=jnp.logical_and(bots, state.units.unit_type == UnitType.HEAVY).sum(1),
             factories=state.n_factories,
+            # Only count water in factories after all factories placed.
+            water_in_factories=jnp.where(state.real_env_steps >= 0, state.factories.cargo.water.sum(1), 0),
         )
 
     @classmethod
