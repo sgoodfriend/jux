@@ -15,6 +15,8 @@ class GenerationStats(NamedTuple):
     power: jax.Array  # int[2]
     light_bots: jax.Array  # int[2]
     heavy_bots: jax.Array  # int[2]
+    friendly_kills: jax.Array  # int[2]
+    opponent_kills: jax.Array  # int[2]
 
     @classmethod
     def empty(cls):
@@ -26,6 +28,8 @@ class GenerationStats(NamedTuple):
             power=jnp.zeros((2, ), dtype=jnp.int32),
             light_bots=jnp.zeros((2, ), dtype=jnp.int32),
             heavy_bots=jnp.zeros((2, ), dtype=jnp.int32),
+            friendly_kills=jnp.zeros((2, ), dtype=jnp.int32),
+            opponent_kills=jnp.zeros((2, ), dtype=jnp.int32),
         )
 
     @classmethod
