@@ -702,6 +702,8 @@ class State(NamedTuple):
         update_power_req = action_queue_power_cost[self.units.unit_type]
         chex.assert_shape(update_power_req, (2, self.MAX_N_UNITS))
         update_queue = (actions.unit_action_queue_update & unit_mask & (update_power_req <= self.units.power))
+        queue_update_success = update_queue.sum(1)
+        queue_update_total = actions.unit_action_queue_update.sum(1)
         new_power = jnp.where(update_queue, self.units.power - update_power_req, self.units.power)
         chex.assert_shape(new_power, (2, self.MAX_N_UNITS))
         new_action_queue = jux.actions.ActionQueue(
@@ -722,10 +724,17 @@ class State(NamedTuple):
                 self.units.action_queue.rear,
             ),
         )
-        new_self: State = self._replace(units=self.units._replace(
-            power=new_power,
-            action_queue=new_action_queue,
-        ))
+        new_self: State = self._replace(
+            units=self.units._replace(
+                power=new_power,
+                action_queue=new_action_queue,
+            ),
+            stats=self.stats._replace(actions=self.stats.actions._replace(
+                queue_update_success=self.stats.actions.queue_update_success + queue_update_success,
+                queue_update_total=self.stats.actions.queue_update_total + queue_update_total,
+                queue_update_failures=self.stats.actions.queue_update_failures +
+                (queue_update_total - queue_update_success),
+            )))
         chex.assert_trees_all_equal_shapes(new_self, self)
         self = new_self
 
@@ -781,7 +790,17 @@ class State(NamedTuple):
                    | action_info["valid_transfer"]
                    | action_info["valid_pickup"])
         units = jax.vmap(jax.vmap(Unit.repeat_action))(self.units, success)
-        self = self._replace(units=units)
+        self = self._replace(
+            units=units,
+            stats=self.stats._replace(actions=self.stats.actions._replace(
+                valid_move=self.stats.actions.valid_move + action_info["movement_info"]["valid"].sum(1),
+                valid_transfer=self.stats.actions.valid_transfer + action_info["valid_transfer"].sum(1),
+                valid_pickup=self.stats.actions.valid_pickup + action_info["valid_pickup"].sum(1),
+                valid_dig=self.stats.actions.valid_dig + action_info["valid_dig"].sum(1),
+                valid_self_destruct=self.stats.actions.valid_self_destruct + action_info["valid_self_destruct"].sum(1),
+                valid_recharge=self.stats.actions.valid_recharge + recharge_success.sum(1),
+            )),
+        )
 
         # destroy dead units
         self, _ = self.destroy_unit(dead)

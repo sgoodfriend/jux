@@ -80,12 +80,26 @@ class ResourceStats(NamedTuple):
 class ActionStats(NamedTuple):
     queue_update_success: jax.Array  # int[2]
     queue_update_total: jax.Array  # int[2]
+    queue_update_failures: jax.Array  # int[2]
+    valid_move: jax.Array  # int[2]
+    valid_transfer: jax.Array  # int[2]
+    valid_pickup: jax.Array  # int[2]
+    valid_dig: jax.Array  # int[2]
+    valid_self_destruct: jax.Array  # int[2]
+    valid_recharge: jax.Array  # int[2]
 
     @classmethod
     def empty(cls):
         return cls(
             queue_update_success=jnp.zeros((2, ), dtype=jnp.int32),
             queue_update_total=jnp.zeros((2, ), dtype=jnp.int32),
+            queue_update_failures=jnp.zeros((2, ), dtype=jnp.int32),
+            valid_move=jnp.zeros((2, ), dtype=jnp.int32),
+            valid_transfer=jnp.zeros((2, ), dtype=jnp.int32),
+            valid_pickup=jnp.zeros((2, ), dtype=jnp.int32),
+            valid_dig=jnp.zeros((2, ), dtype=jnp.int32),
+            valid_self_destruct=jnp.zeros((2, ), dtype=jnp.int32),
+            valid_recharge=jnp.zeros((2, ), dtype=jnp.int32),
         )
 
     @classmethod
