@@ -734,7 +734,8 @@ class State(NamedTuple):
                 queue_update_total=self.stats.actions.queue_update_total + queue_update_total,
                 queue_update_failures=self.stats.actions.queue_update_failures +
                 (queue_update_total - queue_update_success),
-            )))
+            )),
+        )
         chex.assert_trees_all_equal_shapes(new_self, self)
         self = new_self
 
@@ -919,6 +920,7 @@ class State(NamedTuple):
 
         transfer_to_factory = valid & there_is_a_factory  # bool[2, U]
         transfer_to_unit = valid & ~there_is_a_factory & there_is_an_unit  # bool[2, U]
+        transfer_to_nothing = (valid & ~there_is_a_factory & ~there_is_an_unit)  # bool[2, U]
         is_power = actions.resource_type == ResourceType.power
 
         # deduce from unit
@@ -969,7 +971,14 @@ class State(NamedTuple):
             cargo=UnitCargo(unit_stock),
             power=unit_power,
         )
-        self = self._replace(units=units)
+        self = self._replace(
+            units=units,
+            stats=self.stats._replace(transfers=self.stats.transfers._replace(
+                to_factory=self.stats.transfers.to_factory + transfer_to_factory.sum(1),
+                to_unit=self.stats.transfers.to_unit + transfer_to_unit.sum(1),
+                to_nothing=self.stats.transfers.to_nothing + transfer_to_nothing.sum(1),
+            )),
+        )
 
         return self
         # pytype: enable=attribute-error

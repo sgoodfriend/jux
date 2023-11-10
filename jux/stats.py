@@ -110,18 +110,36 @@ class ActionStats(NamedTuple):
         return cls(**kwargs)
 
 
-class Stats(NamedTuple):
-    generation: GenerationStats  # GenerationStats[2]
-    resources: ResourceStats  # ResourceStats[2]
-    actions: ActionStats  # ActionStats[2]
+class TransferStats(NamedTuple):
+    to_factory: jax.Array  # int[2]
+    to_unit: jax.Array  # int[2]
+    to_nothing: jax.Array  # int[2]
 
     @classmethod
     def empty(cls):
         return cls(
-            generation=GenerationStats.empty(),
-            resources=ResourceStats.empty(),
-            actions=ActionStats.empty(),
+            to_factory=jnp.zeros((2, ), dtype=jnp.int32),
+            to_unit=jnp.zeros((2, ), dtype=jnp.int32),
+            to_nothing=jnp.zeros((2, ), dtype=jnp.int32),
         )
+
+    @classmethod
+    def epsilon(cls, **kwargs):
+        kwargs_not_in_cls = [k for k in kwargs if k not in cls._fields]
+        assert not kwargs_not_in_cls, f"{kwargs_not_in_cls} not in {cls.__name__}"
+        kwargs = {f: kwargs.get(f, 1e-6) for f in cls._fields}
+        return cls(**kwargs)
+
+
+class Stats(NamedTuple):
+    generation: GenerationStats  # GenerationStats[2]
+    resources: ResourceStats  # ResourceStats[2]
+    actions: ActionStats  # ActionStats[2]
+    transfers: TransferStats  # TransferStats[2]
+
+    @classmethod
+    def empty(cls):
+        return cls(**{_f: _type.empty() for _f, _type in cls._field_types.items()})
 
     @classmethod
     def epsilon(cls, **kwargs):
