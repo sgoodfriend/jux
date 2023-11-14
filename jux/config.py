@@ -56,8 +56,11 @@ class EnvConfig(NamedTuple):
 
     MAX_RUBBLE: int = 100
     FACTORY_RUBBLE_AFTER_DESTRUCTION: int = 50
-    INIT_WATER_METAL_PER_FACTORY: int = 150  # amount of water and metal units given to each factory
+    INIT_WATER_METAL_PER_FACTORY: int = (
+        150  # amount of water and metal units given to each factory
+    )
     INIT_POWER_PER_FACTORY: int = 1000
+    USES_COMPACT_SPAWNS_MASK: bool = False
 
     #### LICHEN ####
     MIN_LICHEN_TO_SPREAD: int = 20
@@ -119,7 +122,7 @@ class EnvConfig(NamedTuple):
             BATTERY_CAPACITY=3000,
             CHARGE=10,
             MOVE_COST=20,
-            RUBBLE_MOVEMENT_COST=1.,
+            RUBBLE_MOVEMENT_COST=1.0,
             DIG_COST=60,
             SELF_DESTRUCT_COST=100,
             DIG_RUBBLE_REMOVED=20,
@@ -135,8 +138,8 @@ class EnvConfig(NamedTuple):
         lux_env_config = copy(lux_env_config)
 
         lux_env_config.ROBOTS = (
-            UnitConfig.from_lux(lux_env_config.ROBOTS['LIGHT']),
-            UnitConfig.from_lux(lux_env_config.ROBOTS['HEAVY']),
+            UnitConfig.from_lux(lux_env_config.ROBOTS["LIGHT"]),
+            UnitConfig.from_lux(lux_env_config.ROBOTS["HEAVY"]),
         )
 
         lux_env_config = dataclasses.asdict(lux_env_config)
@@ -156,9 +159,9 @@ class EnvConfig(NamedTuple):
         self = jax.tree_map(_to_lux, self)
         self: Dict[str, Any] = self._asdict()
 
-        self['ROBOTS'] = dict(
-            LIGHT=self['ROBOTS'][0].to_lux(),
-            HEAVY=self['ROBOTS'][1].to_lux(),
+        self["ROBOTS"] = dict(
+            LIGHT=self["ROBOTS"][0].to_lux(),
+            HEAVY=self["ROBOTS"][1].to_lux(),
         )
 
         return LuxEnvConfig(**self)
