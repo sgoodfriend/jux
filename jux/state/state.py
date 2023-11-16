@@ -558,6 +558,7 @@ class State(NamedTuple):
             place_first=State.__annotations__["place_first"](place_first),
             env_steps=self.env_steps + 1,
         )
+        self = self._replace(stats=self.stats._replace(resources=ResourceStats.from_state(self)), )
         return self
 
     def add_factory(self, team_id: int, pos: Array, water: int, metal: int):
@@ -654,8 +655,8 @@ class State(NamedTuple):
         self = self._replace(
             teams=teams,
             env_steps=self.env_steps + 1,
-            stats=self.stats._replace(resources=ResourceStats.from_state(self)),
         )
+        self = self._replace(stats=self.stats._replace(resources=ResourceStats.from_state(self)), )
         return self
 
     def _step_late_game(self, actions: JuxAction) -> "State":
@@ -870,11 +871,8 @@ class State(NamedTuple):
         """
 
         # update step number
-        self = self._replace(
-            env_steps=self.env_steps + 1,
-            stats=self.stats._replace(resources=ResourceStats.from_state(self)),
-        )
-
+        self = self._replace(env_steps=self.env_steps + 1, )
+        self = self._replace(stats=self.stats._replace(resources=ResourceStats.from_state(self)), )
         return self
 
     def _step_unified(self, action: UnifiedAction) -> "State":

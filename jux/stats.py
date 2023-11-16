@@ -64,9 +64,13 @@ class ResourceStats(NamedTuple):
             lichen=state.team_lichen_score(),
             light_bots=jnp.logical_and(bots, state.units.unit_type == UnitType.LIGHT).sum(1),
             heavy_bots=jnp.logical_and(bots, state.units.unit_type == UnitType.HEAVY).sum(1),
-            factories=state.n_factories,
+            factories=state.n_factories + state.teams.factories_to_place,
             # Only count water in factories after all factories placed.
-            water_in_factories=jnp.where(state.real_env_steps >= 0, state.factories.cargo.water.sum(1), 0),
+            water_in_factories=jnp.where(
+                state.real_env_steps >= 0,
+                state.factories.cargo.water.sum(1),
+                state.teams.init_water,
+            ),
         )
 
     @classmethod
