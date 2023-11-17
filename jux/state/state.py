@@ -15,7 +15,9 @@ from jux.config import EnvConfig, JuxBufferConfig
 from jux.factory import Factory, LuxFactory
 from jux.map import Board
 from jux.map.position import Direction, Position, direct2delta_xy
+from jux.stats import ResourceStats, Stats
 from jux.team import FactionTypes, LuxTeam, Team
+from jux.unified_actions import UnifiedAction
 from jux.unit import ActionQueue, LuxUnit, Unit, UnitCargo, UnitType
 from jux.unit_cargo import ResourceType
 from jux.utils import INT32_MAX, imax
@@ -32,7 +34,7 @@ def sort_by_unit_id(units: Union[Unit, Factory]):
     return units
 
 
-batch_into_leaf_jitted = jax.jit(jux.tree_util.batch_into_leaf, static_argnames=('axis', ))
+batch_into_leaf_jitted = jax.jit(jux.tree_util.batch_into_leaf, static_argnames=("axis", ))
 
 
 class State(NamedTuple):
@@ -50,7 +52,7 @@ class State(NamedTuple):
     # the idx of non-existent units is jnp.iinfo(jnp.int32).max
     unit_id2idx: Unit.id_dtype()  # int16[MAX_GLOBAL_ID, 2]
     n_units: Unit.id_dtype()  # int16[2]
-    '''
+    """
     The `unit_id2idx` is organized such that
     ```
     [team_id, unit_idx] = unit_id2idx[unit_id]
@@ -69,7 +71,7 @@ class State(NamedTuple):
     assert unit.team_id[1, n_units[1]:] == INT8_MAX
     assert (unit.pos.pos[1, n_units[1]:] == INT8_MAX).all()
     ```
-    '''
+    """
 
     factories: Factory  # Factory[2, F]
     factory_id2idx: Factory.id_dtype()  # int8[2 * F, 2]
@@ -79,6 +81,8 @@ class State(NamedTuple):
 
     global_id: Unit.id_dtype() = Unit.id_dtype()(0)  # int16
     place_first: jnp.int8 = jnp.int8(0)  # 0/1, the player to place first
+
+    stats: Stats = Stats.empty()
 
     @property
     def MAX_N_FACTORIES(self):
@@ -177,7 +181,7 @@ class State(NamedTuple):
             env_cfg=env_cfg,
             seed=jnp.uint32(seed),
             rng_state=key,
-            env_steps=State.__annotations__['env_steps'](0),
+            env_steps=State.__annotations__["env_steps"](0),
             board=board,
             units=units,
             unit_id2idx=unit_id2idx,
@@ -197,21 +201,27 @@ class State(NamedTuple):
             # convert units
             def convert_units(lux_units: LuxUnit) -> Tuple[Unit, Array]:
                 units: Tuple[List[Unit], List[Unit]] = (
-                    [Unit.from_lux(unit, env_cfg) for unit in lux_units['player_0'].values()],
-                    [Unit.from_lux(unit, env_cfg) for unit in lux_units['player_1'].values()],
+                    [Unit.from_lux(unit, env_cfg) for unit in lux_units["player_0"].values()],
+                    [Unit.from_lux(unit, env_cfg) for unit in lux_units["player_1"].values()],
                 )
                 units[0].sort(key=lambda unit: unit.unit_id)  # sort
                 units[1].sort(key=lambda unit: unit.unit_id)
                 n_units = [
-                    len(lux_units['player_0']),
-                    len(lux_units['player_1']),
+                    len(lux_units["player_0"]),
+                    len(lux_units["player_1"]),
                 ]
                 assert (n_units[0] <= buf_cfg.MAX_N_UNITS) and (n_units[1] <= buf_cfg.MAX_N_UNITS)
                 empty_unit = Unit.empty(env_cfg)
                 empty_unit = jax.tree_util.tree_map(lambda x: jnp.array(x)[None, ...], empty_unit)
                 padding_units = (  # padding to length of buf_cfg.max_units
-                    jax.tree_util.tree_map(lambda x: x.repeat(buf_cfg.MAX_N_UNITS - n_units[0], axis=0), empty_unit),
-                    jax.tree_util.tree_map(lambda x: x.repeat(buf_cfg.MAX_N_UNITS - n_units[1], axis=0), empty_unit),
+                    jax.tree_util.tree_map(
+                        lambda x: x.repeat(buf_cfg.MAX_N_UNITS - n_units[0], axis=0),
+                        empty_unit,
+                    ),
+                    jax.tree_util.tree_map(
+                        lambda x: x.repeat(buf_cfg.MAX_N_UNITS - n_units[1], axis=0),
+                        empty_unit,
+                    ),
                 )
                 units: Unit = jux.tree_util.batch_into_leaf([  # batch into leaf
                     jux.tree_util.concat_in_leaf([jux.tree_util.batch_into_leaf(units[0]), padding_units[0]])
@@ -228,14 +238,14 @@ class State(NamedTuple):
             # convert factories
             def convert_factories(lux_factories: LuxFactory) -> Tuple[Factory, Array]:
                 factories: Tuple[List[Factory], List[Factory]] = (
-                    [Factory.from_lux(fac) for fac in lux_factories['player_0'].values()],
-                    [Factory.from_lux(fac) for fac in lux_factories['player_1'].values()],
+                    [Factory.from_lux(fac) for fac in lux_factories["player_0"].values()],
+                    [Factory.from_lux(fac) for fac in lux_factories["player_1"].values()],
                 )
                 factories[0].sort(key=lambda fac: fac.unit_id)  # sort
                 factories[1].sort(key=lambda fac: fac.unit_id)
                 n_factories = [
-                    len(lux_factories['player_0']),
-                    len(lux_factories['player_1']),
+                    len(lux_factories["player_0"]),
+                    len(lux_factories["player_1"]),
                 ]
                 assert (n_factories[0] <= buf_cfg.MAX_N_FACTORIES) and (n_factories[1] <= buf_cfg.MAX_N_FACTORIES)
                 f = Factory.empty()
@@ -256,13 +266,16 @@ class State(NamedTuple):
             teams: List[Team] = [Team.from_lux(team, buf_cfg) for team in lux_state.teams.values()]
             teams.sort(key=lambda team: team.team_id)
             if len(teams) == 0:
-                teams = [Team.new(team_id=0, buf_cfg=buf_cfg), Team.new(team_id=1, buf_cfg=buf_cfg)]
+                teams = [
+                    Team.new(team_id=0, buf_cfg=buf_cfg),
+                    Team.new(team_id=1, buf_cfg=buf_cfg),
+                ]
             teams: Team = batch_into_leaf_jitted(teams)
 
-            if 'player_0' in lux_state.teams and lux_state.teams['player_0'].place_first:
-                place_first = State.__annotations__['place_first'](0)
+            if ("player_0" in lux_state.teams and lux_state.teams["player_0"].place_first):
+                place_first = State.__annotations__["place_first"](0)
             else:
-                place_first = State.__annotations__['place_first'](1)
+                place_first = State.__annotations__["place_first"](1)
 
             seed = lux_state.seed if lux_state.seed is not None else INT32_MAX
 
@@ -270,7 +283,7 @@ class State(NamedTuple):
                 env_cfg=env_cfg,
                 seed=jnp.uint32(seed),
                 rng_state=jax.random.PRNGKey(seed),
-                env_steps=State.__annotations__['env_steps'](lux_state.env_steps),
+                env_steps=State.__annotations__["env_steps"](lux_state.env_steps),
                 board=Board.from_lux(lux_state.board, buf_cfg),
                 units=units,
                 n_units=n_units,
@@ -279,7 +292,7 @@ class State(NamedTuple):
                 n_factories=n_factories,
                 factory_id2idx=factory_id2idx,
                 teams=teams,
-                global_id=State.__annotations__['global_id'](lux_state.global_id),
+                global_id=State.__annotations__["global_id"](lux_state.global_id),
                 place_first=place_first,
             )
         state = jax.device_put(state, jax.devices()[0])
@@ -288,11 +301,11 @@ class State(NamedTuple):
 
     @staticmethod
     def generate_unit_id2idx(units: Unit, max_global_id: int) -> Array:
-        '''
+        """
         organize unit_id2idx such that
             unit_id2idx[unit_id] == [team_id, unit_idx]
             units[team_id, unit_idx].unit_id == unit_id
-        '''
+        """
         units.unit_id: Array
         max_n_units = units.unit_id.shape[-1]
         unit_id2idx = jnp.ones((max_global_id, 2), dtype=Unit.id_dtype()) * imax(Unit.id_dtype())
@@ -301,14 +314,14 @@ class State(NamedTuple):
                 [jnp.zeros(max_n_units), jnp.arange(max_n_units)],
                 dtype=Unit.id_dtype(),
             ).T,
-            mode='drop',
+            mode="drop",
         )
         unit_id2idx = unit_id2idx.at[units.unit_id[..., 1, :]].set(
             jnp.array(
                 [jnp.ones(max_n_units), jnp.arange(max_n_units)],
                 dtype=Unit.id_dtype(),
             ).T,
-            mode='drop',
+            mode="drop",
         )
         return unit_id2idx
 
@@ -321,14 +334,14 @@ class State(NamedTuple):
                 [jnp.zeros(max_n_factories), jnp.arange(max_n_factories)],
                 dtype=Factory.id_dtype(),
             ).T,
-            mode='drop',
+            mode="drop",
         )
         factory_id2idx = factory_id2idx.at[factories.unit_id[..., 1, :]].set(
             jnp.array(
                 [jnp.ones(max_n_factories), jnp.arange(max_n_factories)],
                 dtype=Factory.id_dtype(),
             ).T,
-            mode='drop',
+            mode="drop",
         )
         return factory_id2idx
 
@@ -376,8 +389,8 @@ class State(NamedTuple):
         lux_units = jux.tree_util.batch_out_of_leaf(self.units)
         n_units = self.n_units
         lux_units: Dict[str, Dict[str, Unit]] = {
-            'player_0': _to_lux_units(lux_units[0], n_units[0]),
-            'player_1': _to_lux_units(lux_units[1], n_units[1]),
+            "player_0": _to_lux_units(lux_units[0], n_units[0]),
+            "player_1": _to_lux_units(lux_units[1], n_units[1]),
         }
 
         # convert factories
@@ -389,8 +402,8 @@ class State(NamedTuple):
         lux_factories = jux.tree_util.batch_out_of_leaf(self.factories)
         n_factories = self.n_factories
         lux_factories: Dict[str, Dict[str, LuxFactory]] = {
-            'player_0': _to_lux_factories(lux_factories[0], n_factories[0]),
-            'player_1': _to_lux_factories(lux_factories[1], n_factories[1]),
+            "player_0": _to_lux_factories(lux_factories[0], n_factories[0]),
+            "player_1": _to_lux_factories(lux_factories[1], n_factories[1]),
         }
 
         seed = int(self.seed) if self.seed != INT32_MAX else None
@@ -406,7 +419,7 @@ class State(NamedTuple):
             global_id=int(self.global_id),
         )
 
-    def to_torch(self) -> 'State':
+    def to_torch(self) -> "State":
         # convert seed from uint32 to int32, because torch does not support uint32
         self = self._replace(
             seed=self.seed.astype(jnp.int32),
@@ -415,7 +428,7 @@ class State(NamedTuple):
         )
         return jax.tree_map(jux.torch.to_torch, self)
 
-    def __eq__(self, other: 'State') -> bool:
+    def __eq__(self, other: "State") -> bool:
         if not isinstance(other, State):
             return False
 
@@ -445,8 +458,12 @@ class State(NamedTuple):
                 units_b,
             )
 
-        def factories_eq(factories_a: Factory, n_factories_a: Array, factories_b: Factory,
-                         n_factories_b: Array) -> bool:
+        def factories_eq(
+            factories_a: Factory,
+            n_factories_a: Array,
+            factories_b: Factory,
+            n_factories_b: Array,
+        ) -> bool:
 
             def when_n_eq(self, factories_a, factories_b):
                 factories_a = sort_by_unit_id(factories_a)
@@ -461,11 +478,13 @@ class State(NamedTuple):
                 lambda *args: False,  # when number differ, return false
                 self,
                 factories_a,
-                factories_b)
+                factories_b,
+            )
 
         # self = jax.device_put(self, jax.devices("cpu")[0])
         # other = jax.device_put(other, jax.devices("cpu")[0])
-        return ((self.env_steps == other.env_steps) & (self.board == other.board)
+        return ((self.env_steps == other.env_steps)
+                & (self.board == other.board)
                 & teams_eq(self.teams, other.teams)
                 & factories_eq(self.factories, self.n_factories, other.factories, other.n_factories)
                 & units_eq(self.units, self.n_units, other.units, other.n_units))
@@ -475,11 +494,14 @@ class State(NamedTuple):
 
     def check_actions(self, actions: JuxAction) -> None:
         chex.assert_shape(actions.factory_action, (2, self.MAX_N_FACTORIES))
-        chex.assert_shape(actions.unit_action_queue, (2, self.MAX_N_UNITS, self.env_cfg.UNIT_ACTION_QUEUE_SIZE, 5))
+        chex.assert_shape(
+            actions.unit_action_queue,
+            (2, self.MAX_N_UNITS, self.env_cfg.UNIT_ACTION_QUEUE_SIZE, 5),
+        )
         chex.assert_shape(actions.unit_action_queue_count, (2, self.MAX_N_UNITS))
         chex.assert_shape(actions.unit_action_queue_update, (2, self.MAX_N_UNITS))
 
-    def _step_bid(self, bid: Array, faction: Array) -> 'State':
+    def _step_bid(self, bid: Array, faction: Array) -> "State":
         """The initial bidding step.
 
         Args:
@@ -488,10 +510,18 @@ class State(NamedTuple):
         Returns:
             State: new game state
         """
-        init_resource = Team.__annotations__['init_water'](self.env_cfg.INIT_WATER_METAL_PER_FACTORY)
+        init_resource = Team.__annotations__["init_water"](self.env_cfg.INIT_WATER_METAL_PER_FACTORY)
         init_resource = init_resource * self.board.factories_per_team
-        init_water = jnp.full(shape=(2, ), fill_value=init_resource, dtype=Team.__annotations__['init_water'])
-        init_metal = jnp.full(shape=(2, ), fill_value=init_resource, dtype=Team.__annotations__['init_metal'])
+        init_water = jnp.full(
+            shape=(2, ),
+            fill_value=init_resource,
+            dtype=Team.__annotations__["init_water"],
+        )
+        init_metal = jnp.full(
+            shape=(2, ),
+            fill_value=init_resource,
+            dtype=Team.__annotations__["init_metal"],
+        )
 
         valid_actions = (bid <= init_resource) & (bid >= -init_resource)
 
@@ -517,22 +547,23 @@ class State(NamedTuple):
         self = self._replace(
             teams=self.teams._replace(
                 faction=faction,
-                init_water=init_water.astype(Team.__annotations__['init_water']),
-                init_metal=init_metal.astype(Team.__annotations__['init_metal']),
+                init_water=init_water.astype(Team.__annotations__["init_water"]),
+                init_metal=init_metal.astype(Team.__annotations__["init_metal"]),
                 factories_to_place=jnp.array(
                     [self.board.factories_per_team] * 2,
-                    dtype=Team.__annotations__['factories_to_place'],
+                    dtype=Team.__annotations__["factories_to_place"],
                 ),
-                bid=bid.astype(Team.__annotations__['bid']),
+                bid=bid.astype(Team.__annotations__["bid"]),
             ),
-            place_first=State.__annotations__['place_first'](place_first),
+            place_first=State.__annotations__["place_first"](place_first),
             env_steps=self.env_steps + 1,
         )
+        self = self._replace(stats=self.stats._replace(resources=ResourceStats.from_state(self)), )
         return self
 
     def add_factory(self, team_id: int, pos: Array, water: int, metal: int):
 
-        def _add_factory(self: 'State', team_id: int, pos: Array, water: int, metal: int):
+        def _add_factory(self: "State", team_id: int, pos: Array, water: int, metal: int):
             factory = Factory.new(
                 team_id=team_id,
                 unit_id=self.global_id,
@@ -582,7 +613,7 @@ class State(NamedTuple):
             *(self, team_id, pos, water, metal),
         )
 
-    def _step_factory_placement(self, spawn, water, metal) -> 'State':
+    def _step_factory_placement(self, spawn, water, metal) -> "State":
         """
         The early game step for factory placement. Only half of input arrays is
         used, the other half is ignored, depending on which player's turn it is.
@@ -625,9 +656,10 @@ class State(NamedTuple):
             teams=teams,
             env_steps=self.env_steps + 1,
         )
+        self = self._replace(stats=self.stats._replace(resources=ResourceStats.from_state(self)), )
         return self
 
-    def _step_late_game(self, actions: JuxAction) -> 'State':
+    def _step_late_game(self, actions: JuxAction) -> "State":
         real_env_steps = self.real_env_steps
         unit_mask = self.unit_mask
         factory_mask = self.factory_mask
@@ -636,8 +668,8 @@ class State(NamedTuple):
         failed_players = jnp.zeros((2, ), dtype=np.bool_)
 
         # check factories
-        failed_factory = ((actions.factory_action < FactoryAction.DO_NOTHING) |
-                          (actions.factory_action > FactoryAction.WATER))
+        failed_factory = (actions.factory_action < FactoryAction.DO_NOTHING) | (actions.factory_action >
+                                                                                FactoryAction.WATER)
         failed_factory = failed_factory & factory_mask
         chex.assert_shape(failed_factory, (2, self.MAX_N_FACTORIES))
         failed_factory = jnp.any(failed_factory, axis=-1)
@@ -645,14 +677,14 @@ class State(NamedTuple):
         failed_players = failed_players | failed_factory
 
         # check units
-        action_mask = jnp.arange(self.UNIT_ACTION_QUEUE_SIZE, dtype=ActionQueue.__annotations__['count'])
+        action_mask = jnp.arange(self.UNIT_ACTION_QUEUE_SIZE, dtype=ActionQueue.__annotations__["count"])
         action_mask = jnp.repeat(
             action_mask[None, :],
             2 * self.MAX_N_UNITS,
             axis=-2,
         ).reshape((2, self.MAX_N_UNITS, -1))  # bool[2, U, Q]
         chex.assert_shape(action_mask, (2, self.MAX_N_UNITS, self.UNIT_ACTION_QUEUE_SIZE))
-        action_mask = action_mask < actions.unit_action_queue_count[..., None]  # bool[2, U, Q]
+        action_mask = (action_mask < actions.unit_action_queue_count[..., None])  # bool[2, U, Q]
         chex.assert_shape(action_mask, (2, self.MAX_N_UNITS, self.UNIT_ACTION_QUEUE_SIZE))
 
         failed_players = failed_players | (actions.unit_action_queue_update & ~unit_mask).any(-1)
@@ -666,11 +698,13 @@ class State(NamedTuple):
         # update units action queue
         action_queue_power_cost = jnp.array(
             [unit_cfg.ACTION_QUEUE_POWER_COST for unit_cfg in self.env_cfg.ROBOTS],
-            dtype=Unit.__annotations__['power'],
+            dtype=Unit.__annotations__["power"],
         )
         update_power_req = action_queue_power_cost[self.units.unit_type]
         chex.assert_shape(update_power_req, (2, self.MAX_N_UNITS))
-        update_queue = actions.unit_action_queue_update & unit_mask & (update_power_req <= self.units.power)
+        update_queue = (actions.unit_action_queue_update & unit_mask & (update_power_req <= self.units.power))
+        queue_update_success = update_queue.sum(1)
+        queue_update_total = actions.unit_action_queue_update.sum(1)
         new_power = jnp.where(update_queue, self.units.power - update_power_req, self.units.power)
         chex.assert_shape(new_power, (2, self.MAX_N_UNITS))
         new_action_queue = jux.actions.ActionQueue(
@@ -679,14 +713,30 @@ class State(NamedTuple):
                 actions.unit_action_queue,
                 self.units.action_queue.data,
             ),
-            count=jnp.where(update_queue, actions.unit_action_queue_count, self.units.action_queue.count),
+            count=jnp.where(
+                update_queue,
+                actions.unit_action_queue_count,
+                self.units.action_queue.count,
+            ),
             front=jnp.where(update_queue, 0, self.units.action_queue.front),
-            rear=jnp.where(update_queue, actions.unit_action_queue_count, self.units.action_queue.rear),
+            rear=jnp.where(
+                update_queue,
+                actions.unit_action_queue_count,
+                self.units.action_queue.rear,
+            ),
         )
-        new_self: State = self._replace(units=self.units._replace(
-            power=new_power,
-            action_queue=new_action_queue,
-        ))
+        new_self: State = self._replace(
+            units=self.units._replace(
+                power=new_power,
+                action_queue=new_action_queue,
+            ),
+            stats=self.stats._replace(actions=self.stats.actions._replace(
+                queue_update_success=self.stats.actions.queue_update_success + queue_update_success,
+                queue_update_total=self.stats.actions.queue_update_total + queue_update_total,
+                queue_update_failures=self.stats.actions.queue_update_failures +
+                (queue_update_total - queue_update_success),
+            )),
+        )
         chex.assert_trees_all_equal_shapes(new_self, self)
         self = new_self
 
@@ -720,31 +770,39 @@ class State(NamedTuple):
         )
 
         # 4. execute actions.
-        self = self._handle_dig_actions(unit_action, action_info['valid_dig'])
-        self, dead = self._handle_self_destruct_actions(unit_action, action_info['valid_self_destruct'])
-        self = self._handle_factory_build_actions(factory_actions, action_info['valid_factory_build'])
-        self, new_dead = self._handle_movement_actions(unit_action, action_info['movement_info'], dead)
+        self = self._handle_dig_actions(unit_action, action_info["valid_dig"])
+        self, dead = self._handle_self_destruct_actions(unit_action, action_info["valid_self_destruct"])
+        self = self._handle_factory_build_actions(factory_actions, action_info["valid_factory_build"])
+        self, new_dead = self._handle_movement_actions(unit_action, action_info["movement_info"], dead)
         dead = dead | new_dead
         # Not all valid recharge actions are executed successfully, there is a `suc` indicator returned.
-        self, recharge_success = self._handle_recharge_actions(unit_action, action_info['valid_recharge'])
+        self, recharge_success = self._handle_recharge_actions(unit_action, action_info["valid_recharge"])
 
         self = self.add_rubble_for_dead_units(dead)
 
         color, grow_lichen_size, connected_lichen_size = self._cache_water_info(factory_actions)
         self = self._handle_factory_water_actions(factory_actions, color, grow_lichen_size)
-        self = self._handle_transfer_actions(unit_action, action_info['valid_transfer'])
-        self = self._handle_pickup_actions(unit_action, action_info['valid_pickup'])
+        self = self._handle_transfer_actions(unit_action, action_info["valid_transfer"])
+        self = self._handle_pickup_actions(unit_action, action_info["valid_pickup"])
 
         # handle action pop and repeat
-        success = (
-            action_info['valid_dig'] | \
-            recharge_success | \
-            action_info['movement_info']['valid'] | \
-            action_info['valid_transfer'] | \
-            action_info['valid_pickup']
-        )
+        success = (action_info["valid_dig"]
+                   | recharge_success
+                   | action_info["movement_info"]["valid"]
+                   | action_info["valid_transfer"]
+                   | action_info["valid_pickup"])
         units = jax.vmap(jax.vmap(Unit.repeat_action))(self.units, success)
-        self = self._replace(units=units)
+        self = self._replace(
+            units=units,
+            stats=self.stats._replace(actions=self.stats.actions._replace(
+                valid_move=self.stats.actions.valid_move + action_info["movement_info"]["valid"].sum(1),
+                valid_transfer=self.stats.actions.valid_transfer + action_info["valid_transfer"].sum(1),
+                valid_pickup=self.stats.actions.valid_pickup + action_info["valid_pickup"].sum(1),
+                valid_dig=self.stats.actions.valid_dig + action_info["valid_dig"].sum(1),
+                valid_self_destruct=self.stats.actions.valid_self_destruct + action_info["valid_self_destruct"].sum(1),
+                valid_recharge=self.stats.actions.valid_recharge + recharge_success.sum(1),
+            )),
+        )
 
         # destroy dead units
         self, _ = self.destroy_unit(dead)
@@ -752,56 +810,88 @@ class State(NamedTuple):
         # update lichen
         new_lichen = self.board.lichen - 1
         new_lichen = new_lichen.clip(0, self.env_cfg.MAX_LICHEN_PER_TILE)
-        new_lichen_strains = jnp.where(new_lichen == 0, imax(self.board.lichen_strains.dtype),
-                                       self.board.lichen_strains)
+        new_lichen_strains = jnp.where(
+            new_lichen == 0,
+            imax(self.board.lichen_strains.dtype),
+            self.board.lichen_strains,
+        )
         self = self._replace(board=self.board._replace(
             lichen=new_lichen,
             lichen_strains=new_lichen_strains,
         ))
 
         # resources refining
-        factories = self.factories.refine_step(self.env_cfg)
+        factories, generation_stats = self.factories.refine_step(self.env_cfg, self.stats.generation)
         water_cost = self.env_cfg.FACTORY_WATER_CONSUMPTION * self.factory_mask
         stock = factories.cargo.stock.at[..., ResourceType.water].add(-water_cost)
         factories = factories._replace(cargo=factories.cargo._replace(stock=stock))
-        self = self._replace(factories=factories)
+        self = self._replace(factories=factories, stats=self.stats._replace(generation=generation_stats))
 
         # factories gain power
-        delta_power = self.env_cfg.FACTORY_CHARGE + connected_lichen_size * self.env_cfg.POWER_PER_CONNECTED_LICHEN_TILE
-        new_factory_power = self.factories.power + jnp.where(self.factory_mask, delta_power, 0)
-        self = self._replace(factories=self.factories._replace(power=new_factory_power))
+        delta_power = jnp.where(
+            self.factory_mask,
+            self.env_cfg.FACTORY_CHARGE + connected_lichen_size * self.env_cfg.POWER_PER_CONNECTED_LICHEN_TILE,
+            0,
+        )
+        new_factory_power = self.factories.power + delta_power
+        self = self._replace(
+            factories=self.factories._replace(power=new_factory_power),
+            stats=self.stats._replace(generation=self.stats.generation._replace(power=self.stats.generation.power +
+                                                                                delta_power.sum(1))),
+        )
 
         # destroy factories without water
-        factories_to_destroy = (self.factories.cargo.water < 0)  # noqa
+        factories_to_destroy = self.factories.cargo.water < 0  # noqa
         self = self.destroy_factories(factories_to_destroy)
 
         # power gain
-        def _gain_power(self: 'State') -> Unit:
+        def _gain_power(self: "State") -> Unit:
             new_units = self.units.gain_power(self.env_cfg.ROBOTS)
             new_units = new_units._replace(power=new_units.power * self.unit_mask)
             return new_units
 
-        self = self._replace(units=jax.lax.cond(
+        before_charge_unit_power = self.units.power
+        charged_units = jax.lax.cond(
             is_day(self.env_cfg, real_env_steps),
             _gain_power,
             lambda self: self.units,
             self,
-        ))
-        '''
+        )
+        self = self._replace(
+            units=charged_units,
+            stats=self.stats._replace(generation=self.stats.generation._replace(
+                power=self.stats.generation.power + (charged_units.power - before_charge_unit_power).sum(1))),
+        )
+        """
         # this if statement is same as above jax.lax.cond
         if is_day(self.env_cfg, real_env_steps):
             new_units = self.units.gain_power(weather_cfg["power_gain_factor"])
             new_units = new_units._replace(power=new_units.power * self.unit_mask)
             self = self._replace(units=new_units)
-        '''
+        """
 
         # update step number
-        self = self._replace(env_steps=self.env_steps + 1)
-
+        self = self._replace(env_steps=self.env_steps + 1, )
+        self = self._replace(stats=self.stats._replace(resources=ResourceStats.from_state(self)), )
         return self
 
+    def _step_unified(self, action: UnifiedAction) -> "State":
+
+        def step_factory_placement(self: "State", action: UnifiedAction) -> "State":
+            return self._step_factory_placement(*action.factory_placement_action)
+
+        def step_late_game(self: "State", action: UnifiedAction) -> "State":
+            return self._step_late_game(action.late_game_action)
+
+        return jax.lax.cond(
+            self.real_env_steps < 0,
+            step_factory_placement,
+            step_late_game,
+            *(self, action),
+        )
+
     def _validate_transfer_actions(self, actions: UnitAction):
-        valid = (actions.action_type == UnitActionType.TRANSFER)
+        valid = actions.action_type == UnitActionType.TRANSFER
 
         # the target must be in map
         target_pos = Position(self.units.pos.pos + direct2delta_xy[actions.direction])  # int[2, U, 2]
@@ -810,25 +900,26 @@ class State(NamedTuple):
 
         return valid
 
-    def _handle_transfer_actions(self, actions: UnitAction, valid: Array) -> 'State':
+    def _handle_transfer_actions(self, actions: UnitAction, valid: Array) -> "State":
         # pytype: disable=attribute-error
         # pytype: disable=unsupported-operands
 
         # decide target
         target_pos = Position(self.units.pos.pos + direct2delta_xy[actions.direction])  # int[2, U, 2]
         target_factory_id = self.board.factory_occupancy_map[target_pos.x, target_pos.y]  # int[2, U]
-        target_factory_idx = self.factory_id2idx.at[target_factory_id] \
-                                                .get(mode='fill', fill_value=imax(self.factory_id2idx.dtype))  # int[2, U, 2]
-        there_is_a_factory = target_factory_idx[..., 1] < self.n_factories[target_factory_idx[..., 0]]  # bool[2, U]
+        target_factory_idx = self.factory_id2idx.at[target_factory_id].get(
+            mode="fill", fill_value=imax(self.factory_id2idx.dtype))  # int[2, U, 2]
+        there_is_a_factory = (target_factory_idx[..., 1] < self.n_factories[target_factory_idx[..., 0]])  # bool[2, U]
 
         target_unit_id = self.board.units_map[target_pos.x, target_pos.y]  # int[2, U]
-        target_unit_idx = self.unit_id2idx.at[target_unit_id] \
-                                          .get(mode='fill', fill_value=imax(self.unit_id2idx.dtype))  # int[2, U, 2]
-        there_is_an_unit = target_unit_idx[..., 1] < self.n_units[target_unit_idx[..., 0]]  # bool[2, U]
+        target_unit_idx = self.unit_id2idx.at[target_unit_id].get(mode="fill", fill_value=imax(
+            self.unit_id2idx.dtype))  # int[2, U, 2]
+        there_is_an_unit = (target_unit_idx[..., 1] < self.n_units[target_unit_idx[..., 0]])  # bool[2, U]
 
         transfer_to_factory = valid & there_is_a_factory  # bool[2, U]
         transfer_to_unit = valid & ~there_is_a_factory & there_is_an_unit  # bool[2, U]
-        is_power = (actions.resource_type == ResourceType.power)
+        transfer_to_nothing = (valid & ~there_is_a_factory & ~there_is_an_unit)  # bool[2, U]
+        is_power = actions.resource_type == ResourceType.power
 
         # deduce from unit
         transfer_amount = jnp.where(valid, actions.amount, 0)  # int[2, U]
@@ -846,11 +937,11 @@ class State(NamedTuple):
             target_factory_idx[..., 0],
             target_factory_idx[..., 1],
             actions.resource_type,
-        )].add(transferred_resource, mode='drop')  # int[2, F, 4]
+        )].add(transferred_resource, mode="drop")  # int[2, F, 4]
         factory_power = self.factories.power.at[(
             target_factory_idx[..., 0],
             target_factory_idx[..., 1],
-        )].add(transferred_power, mode='drop')  # int[2, F]
+        )].add(transferred_power, mode="drop")  # int[2, F]
         factories = self.factories._replace(
             cargo=UnitCargo(factory_stock),
             power=factory_power,
@@ -864,21 +955,28 @@ class State(NamedTuple):
             target_unit_idx[..., 0],
             target_unit_idx[..., 1],
             actions.resource_type,
-        )].add(transferred_resource, mode='drop')  # int[2, U, 4]
+        )].add(transferred_resource, mode="drop")  # int[2, U, 4]
         cargo_space = self.units.get_cfg("CARGO_SPACE", self.env_cfg.ROBOTS)
         unit_stock = jnp.minimum(unit_stock, cargo_space[..., None])  # int[2, U, 4]
 
         unit_power = self.units.power.at[(
             target_unit_idx[..., 0],
             target_unit_idx[..., 1],
-        )].add(transferred_power, mode='drop')  # int[2, U]
+        )].add(transferred_power, mode="drop")  # int[2, U]
         battery_capacity = self.units.get_cfg("BATTERY_CAPACITY", self.env_cfg.ROBOTS)
         unit_power = jnp.minimum(unit_power, battery_capacity)  # int[2, U]
         units = self.units._replace(
             cargo=UnitCargo(unit_stock),
             power=unit_power,
         )
-        self = self._replace(units=units)
+        self = self._replace(
+            units=units,
+            stats=self.stats._replace(transfers=self.stats.transfers._replace(
+                to_factory=self.stats.transfers.to_factory + transfer_to_factory.sum(1),
+                to_unit=self.stats.transfers.to_unit + transfer_to_unit.sum(1),
+                to_nothing=self.stats.transfers.to_nothing + transfer_to_nothing.sum(1),
+            )),
+        )
 
         return self
         # pytype: enable=attribute-error
@@ -894,7 +992,7 @@ class State(NamedTuple):
 
         return valid
 
-    def _handle_pickup_actions(self, actions: UnitAction, valid: Array) -> 'State':
+    def _handle_pickup_actions(self, actions: UnitAction, valid: Array) -> "State":
         # This action is difficult to vectorize, because pickup actions are not
         # independent from each other. Two robots may pick up from the same
         # factory. Assume there two robots, both pickup 10 power from the same
@@ -920,12 +1018,15 @@ class State(NamedTuple):
         unit_id_on_factory = units_map[occupy_pos.x, occupy_pos.y]
         unit_id_on_factory = jnp.sort(unit_id_on_factory, axis=-1)  # sort by id, so small ids have higher priority
         unit_idx_on_factory = self.unit_id2idx[unit_id_on_factory]  # int[2, F, 9, 2]
-        unit_team_idx, unit_idx = unit_idx_on_factory[..., 0], unit_idx_on_factory[..., 1]  # int[2, F, 9]
+        unit_team_idx, unit_idx = (
+            unit_idx_on_factory[..., 0],
+            unit_idx_on_factory[..., 1],
+        )  # int[2, F, 9]
         chex.assert_shape(unit_idx_on_factory, (2, self.MAX_N_FACTORIES, 9, 2))
 
         # get action info
         action_type = actions.action_type.at[unit_team_idx, unit_idx].get(mode="fill", fill_value=0)  # int[2, F, 9]
-        is_pickup = (UnitActionType.PICKUP == action_type)  # int[2, F, 9]
+        is_pickup = UnitActionType.PICKUP == action_type  # int[2, F, 9]
         resource_type = actions.resource_type.at[unit_team_idx, unit_idx].get(mode="fill", fill_value=0)  # int[2, F, 9]
         amount = actions.amount.at[unit_team_idx, unit_idx].get(mode="fill", fill_value=0)  # int[2, F, 9]
         amount = amount * is_pickup  # int[2, F, 9]
@@ -956,23 +1057,29 @@ class State(NamedTuple):
             axis=-2,
         )  # int[2, F, 9, 5]
         real_pickup_amount = real_cumsum - real_cumsum_without_self  # int[2, F, 9, 5]
-        chex.assert_equal_shape([amount_by_type, cumsum, real_cumsum, real_cumsum_without_self, real_pickup_amount])
+        chex.assert_equal_shape([
+            amount_by_type,
+            cumsum,
+            real_cumsum,
+            real_cumsum_without_self,
+            real_pickup_amount,
+        ])
 
         # 3. apply the real_pickup_amount
         factory_lose = real_cumsum[:, :, -1, :]  # int[2, F, 5]
-        fac_power = self.factories.power - factory_lose[:, :, ResourceType.power]  # int[2, F]
+        fac_power = (self.factories.power - factory_lose[:, :, ResourceType.power])  # int[2, F]
         fac_stock = self.factories.cargo.stock - factory_lose[:, :, :4]  # int[2, F, 4]
         new_factories = self.factories._replace(power=fac_power, cargo=UnitCargo(fac_stock))
 
         units_power = self.units.power.at[unit_team_idx, unit_idx].add(
             real_pickup_amount[..., ResourceType.power],
-            mode='drop',
+            mode="drop",
         )  # int[2, U]
         battery_capacity = self.units.get_cfg("BATTERY_CAPACITY", self.env_cfg.ROBOTS)
         units_power = jnp.minimum(units_power, battery_capacity)
         units_stock = self.units.cargo.stock.at[unit_team_idx, unit_idx].add(
             real_pickup_amount[..., :4],
-            mode='drop',
+            mode="drop",
         )  # int[2, U, 4]
         cargo_space = self.units.get_cfg("CARGO_SPACE", self.env_cfg.ROBOTS)
         units_stock = jnp.minimum(units_stock, cargo_space[..., None])
@@ -983,7 +1090,7 @@ class State(NamedTuple):
         # pytype: enable=attribute-error
         # pytype: enable=unsupported-operands
 
-    def _validate_dig_actions(self: 'State', actions: UnitAction) -> Array:
+    def _validate_dig_actions(self: "State", actions: UnitAction) -> Array:
         unit_mask = self.unit_mask
         units = self.units
         valid = (actions.action_type == UnitActionType.DIG) & unit_mask
@@ -995,14 +1102,14 @@ class State(NamedTuple):
         # cannot dig if on top of a factory
         x, y = units.pos.x, units.pos.y
         factory_id_in_pos = self.board.factory_occupancy_map[x, y]
-        factory_player_id = self.factory_id2idx.at[factory_id_in_pos] \
-                                               .get(mode='fill', fill_value=imax(self.factory_id2idx.dtype))
+        factory_player_id = self.factory_id2idx.at[factory_id_in_pos].get(mode="fill",
+                                                                          fill_value=imax(self.factory_id2idx.dtype))
         factory_player_id = factory_player_id[..., 0]
         valid = valid & (factory_player_id == imax(factory_player_id.dtype))
 
         return valid
 
-    def _handle_dig_actions(self: 'State', actions: UnitAction, valid: Array) -> 'State':
+    def _handle_dig_actions(self: "State", actions: UnitAction, valid: Array) -> "State":
         units = self.units
         power_cost = units.get_cfg("DIG_COST", self.env_cfg.ROBOTS)
         x, y = self.units.pos.x, self.units.pos.y
@@ -1032,11 +1139,13 @@ class State(NamedTuple):
 
         # ice
         dig_ice = valid & ~dig_rubble & ~dig_lichen & self.board.ice[x, y]
-        units, _ = add_resource(units, ResourceType.ice, dig_resource_gain * dig_ice, self.env_cfg.ROBOTS)
+        ice_gained = dig_resource_gain * dig_ice
+        units, _ = add_resource(units, ResourceType.ice, ice_gained, self.env_cfg.ROBOTS)
 
         # ore
-        dig_ore = valid & ~dig_rubble & ~dig_lichen & ~dig_ice & (self.board.ore[x, y] > 0)
-        units, _ = add_resource(units, ResourceType.ore, dig_resource_gain * dig_ore, self.env_cfg.ROBOTS)
+        dig_ore = (valid & ~dig_rubble & ~dig_lichen & ~dig_ice & (self.board.ore[x, y] > 0))
+        ore_gained = dig_resource_gain * dig_ore
+        units, _ = add_resource(units, ResourceType.ore, ore_gained, self.env_cfg.ROBOTS)
 
         new_self = self._replace(
             units=units,
@@ -1044,17 +1153,20 @@ class State(NamedTuple):
                 map=self.board.map._replace(rubble=new_rubble),
                 lichen=new_lichen,
             ),
+            stats=self.stats._replace(generation=self.stats.generation._replace(
+                ice=self.stats.generation.ice + ice_gained.sum(1),
+                ore=self.stats.generation.ore + ore_gained.sum(1),
+            )),
         )
         return new_self
 
-    def _validate_self_destruct_actions(self: 'State', actions: UnitAction) -> Array:
+    def _validate_self_destruct_actions(self: "State", actions: UnitAction) -> Array:
         power_cost = self.units.get_cfg("SELF_DESTRUCT_COST", self.env_cfg.ROBOTS)
         valid = (actions.action_type == UnitActionType.SELF_DESTRUCT) & (self.units.power >= power_cost)
 
         return valid
 
-    def _handle_self_destruct_actions(self, actions: UnitAction, valid: Array) -> Tuple['State', Array]:
-
+    def _handle_self_destruct_actions(self, actions: UnitAction, valid: Array) -> Tuple["State", Array]:
         # bool indicator of dead units
         dead = valid
 
@@ -1071,7 +1183,7 @@ class State(NamedTuple):
 
         return self, dead
 
-    def _validate_factory_build_actions(self: 'State', factory_actions: Array) -> Array:
+    def _validate_factory_build_actions(self: "State", factory_actions: Array) -> Array:
         factory_mask = self.factory_mask
         is_build_heavy = (factory_actions == FactoryAction.BUILD_HEAVY) & factory_mask
         is_build_light = (factory_actions == FactoryAction.BUILD_LIGHT) & factory_mask
@@ -1092,8 +1204,7 @@ class State(NamedTuple):
 
         return valid
 
-    def _handle_factory_build_actions(self: 'State', factory_actions: Array, valid: Array) -> 'State':
-
+    def _handle_factory_build_actions(self: "State", factory_actions: Array, valid: Array) -> "State":
         # 1. double check if build action is valid. Because robots may pickup resources from factory
         valid = valid & self._validate_factory_build_actions(factory_actions)
 
@@ -1105,8 +1216,8 @@ class State(NamedTuple):
         heavy_metal_cost = self.env_cfg.ROBOTS[UnitType.HEAVY].METAL_COST
 
         # 2. deduct power and metal
-        power_cost = is_build_light * light_power_cost + is_build_heavy * heavy_power_cost
-        metal_cost = is_build_light * light_metal_cost + is_build_heavy * heavy_metal_cost
+        power_cost = (is_build_light * light_power_cost + is_build_heavy * heavy_power_cost)
+        metal_cost = (is_build_light * light_metal_cost + is_build_heavy * heavy_metal_cost)
         factory_sub_resource = jax.vmap(jax.vmap(Factory.sub_resource, in_axes=(0, None, 0)), in_axes=(0, None, 0))
         factories = self.factories
         factories, _ = factory_sub_resource(factories, ResourceType.power, power_cost)
@@ -1133,7 +1244,7 @@ class State(NamedTuple):
         created_units_idx = jnp.where(valid, created_units_idx, imax(created_units_idx.dtype))
 
         def set_unit_attr(units_attr, created_attr):
-            return units_attr.at[jnp.arange(2)[..., None], created_units_idx, ...].set(created_attr, mode='drop')
+            return units_attr.at[jnp.arange(2)[..., None], created_units_idx, ...].set(created_attr, mode="drop")
 
         new_units = jax.tree_map(set_unit_attr, self.units, created_units)
         new_n_units = self.n_units + n_new_units
@@ -1144,11 +1255,15 @@ class State(NamedTuple):
             unit_id2idx=State.generate_unit_id2idx(new_units, self.MAX_GLOBAL_ID),
             board=self.board.update_units_map(new_units),
             global_id=self.global_id + n_new_units.sum(dtype=n_new_units.dtype),
+            stats=self.stats._replace(generation=self.stats.generation._replace(
+                light_bots=self.stats.generation.light_bots + is_build_light.sum(1),
+                heavy_bots=self.stats.generation.heavy_bots + is_build_heavy.sum(1),
+            )),
         )
 
     def _validate_movement_actions(self, actions: UnitAction) -> Tuple[Array, Array]:
         unit_mask = self.unit_mask
-        player_id = jnp.array([0, 1])[..., None].astype(Team.__annotations__['team_id'])
+        player_id = jnp.array([0, 1])[..., None].astype(Team.__annotations__["team_id"])
 
         is_moving = ((actions.action_type == UnitActionType.MOVE) & (actions.direction != Direction.CENTER)) & unit_mask
 
@@ -1159,8 +1274,9 @@ class State(NamedTuple):
 
         # can't move into a cell occupied by opponent's factory
         factory_id_in_new_pos = self.board.factory_occupancy_map[new_pos.x, new_pos.y]  # int8[2, U]
-        factory_player_id = self.factory_id2idx.at[factory_id_in_new_pos] \
-                                               .get(mode='fill', fill_value=imax(self.factory_id2idx.dtype))
+        factory_player_id = self.factory_id2idx.at[factory_id_in_new_pos].get(mode="fill",
+                                                                              fill_value=imax(
+                                                                                  self.factory_id2idx.dtype))
         factory_player_id = factory_player_id[..., 0]
         opponent_id = player_id[::-1]
         target_is_opponent_factory = factory_player_id == opponent_id
@@ -1172,19 +1288,20 @@ class State(NamedTuple):
         is_moving = is_moving & (power_cost <= self.units.power)
 
         # moving to center is always considered as success
-        valid = is_moving | (((actions.action_type == UnitActionType.MOVE) &
-                              (actions.direction == Direction.CENTER)) & unit_mask)
+        valid = is_moving | (((actions.action_type == UnitActionType.MOVE)
+                              & (actions.direction == Direction.CENTER))
+                             & unit_mask)
         return valid, power_cost
 
     def _handle_movement_actions(self, actions: UnitAction, movement_info: Dict[str, Array],
-                                 already_dead: Array) -> Tuple['State', Array]:
-        valid, power_cost = movement_info['valid'], movement_info['power_cost']
+                                 already_dead: Array) -> Tuple["State", Array]:
+        valid, power_cost = movement_info["valid"], movement_info["power_cost"]
 
         # move to center is not considered as moving
         is_moving = valid & (actions.direction != Direction.CENTER)
 
         # 1. update unit position and power
-        new_pos = self.units.pos.pos + direct2delta_xy[actions.direction] * is_moving[..., None]
+        new_pos = (self.units.pos.pos + direct2delta_xy[actions.direction] * is_moving[..., None])
         new_power = self.units.power - power_cost * is_moving
         units = self.units._replace(
             pos=Position(new_pos),
@@ -1206,42 +1323,50 @@ class State(NamedTuple):
         is_living = ~already_dead & unit_mask
 
         cnt = jnp.zeros_like(self.board.units_map, dtype=jnp.int8)
-        still_light_cnt = cnt.at[x, y].add(light & still & is_living, mode='drop')  # int[H, W]
-        moving_light_cnt = cnt.at[x, y].add(light & moving & is_living, mode='drop')  # int[H, W]
-        still_heavy_cnt = cnt.at[x, y].add(heavy & still & is_living, mode='drop')  # int[H, W]
-        moving_heavy_cnt = cnt.at[x, y].add(heavy & moving & is_living, mode='drop')  # int[H, W]
+        still_light_cnt = cnt.at[x, y].add(light & still & is_living, mode="drop")  # int[H, W]
+        moving_light_cnt = cnt.at[x, y].add(light & moving & is_living, mode="drop")  # int[H, W]
+        still_heavy_cnt = cnt.at[x, y].add(heavy & still & is_living, mode="drop")  # int[H, W]
+        moving_heavy_cnt = cnt.at[x, y].add(heavy & moving & is_living, mode="drop")  # int[H, W]
         chex.assert_equal_shape([still_light_cnt, moving_light_cnt, still_heavy_cnt, moving_heavy_cnt, cnt])
 
         # get the second max power of moving light units
         max_power = jnp.full_like(self.board.units_map, fill_value=-1, dtype=units.power.dtype)
         moving_light_max_power = max_power.at[x, y].max(  # int[H, W]
             jnp.where(light & moving & is_living, units.power, -1),
-            mode='drop',
+            mode="drop",
         )
         max_power_in_unit_pos = moving_light_max_power[x, y]  # int[2, U]
         moving_light_second_max = max_power.at[x, y].max(  # int[H, W]
-            jnp.where(light & moving & is_living & (units.power != max_power_in_unit_pos), units.power, -1),
-            mode='drop',
+            jnp.where(
+                light & moving & is_living & (units.power != max_power_in_unit_pos),
+                units.power,
+                -1,
+            ),
+            mode="drop",
         )
         moving_light_max_cnt = cnt.at[x, y].add(  # int[H, W]
             light & moving & is_living & (units.power == max_power_in_unit_pos),
-            mode='drop',
+            mode="drop",
         )
         moving_light_second_max = jnp.where(moving_light_max_cnt > 1, moving_light_max_power, moving_light_second_max)
 
         # get the second max power of moving heavy units
         moving_heavy_max_power = max_power.at[x, y].max(  # int[H, W]
             jnp.where(heavy & moving & is_living, units.power, -1),
-            mode='drop',
+            mode="drop",
         )
         max_power_in_unit_pos = moving_heavy_max_power[x, y]  # int[2, U]
         moving_heavy_second_max = max_power.at[x, y].max(  # int[H, W]
-            jnp.where(heavy & moving & is_living & (units.power != max_power_in_unit_pos), units.power, -1),
-            mode='drop',
+            jnp.where(
+                heavy & moving & is_living & (units.power != max_power_in_unit_pos),
+                units.power,
+                -1,
+            ),
+            mode="drop",
         )
         moving_heavy_max_cnt = cnt.at[x, y].add(  # int[H, W]
             heavy & moving & is_living & (units.power == max_power_in_unit_pos),
-            mode='drop',
+            mode="drop",
         )
         moving_heavy_second_max = jnp.where(moving_heavy_max_cnt > 1, moving_heavy_max_power, moving_heavy_second_max)
 
@@ -1264,19 +1389,33 @@ class State(NamedTuple):
             # case 3 you are light but still, and there is a moving light:
             (light & still & (moving_light_cnt > 0)),
             # case 4 you are moving light, and there is another moving light having more or equal power:
-            (light & moving & (moving_light_cnt > 1) & (units.power <= moving_light_second_max)),
+            (light
+             & moving
+             & (moving_light_cnt > 1)
+             & (units.power <= moving_light_second_max)),
             # case 5 you are heavy but still, and there is another still heavy:
             (heavy & still & (still_heavy_cnt > 1)),
             # case 6 you are heavy but still, and there is a moving heavy:
             (heavy & still & (moving_heavy_cnt > 0)),
             # case 7 you are heavy but moving, and there is another moving heavy having more or equal power:
-            (heavy & moving & (moving_heavy_cnt > 1) & (units.power <= moving_heavy_second_max)),
+            (heavy
+             & moving
+             & (moving_heavy_cnt > 1)
+             & (units.power <= moving_heavy_second_max)),
         ]
         # or them together
         new_dead = functools.reduce(jnp.logical_or, cases)
+        still_alive = ~new_dead & is_living  # int[2, U]
+        alive_map = (jnp.zeros((2, ) + self.board.units_map.shape, dtype=jnp.int8).at[jnp.arange(2)[:, None], x,
+                                                                                      y].add(still_alive, mode="drop"))
+        dead_map = (jnp.zeros((2, ) + self.board.units_map.shape, dtype=jnp.int8).at[jnp.arange(2)[:, None], x,
+                                                                                     y].add(new_dead, mode="drop"))
+        friendly_kills = jnp.where(alive_map, dead_map, 0).sum((-1, -2))  # int[2]
+        opponent_kills = jnp.where(alive_map, dead_map[::-1], 0).sum((-1, -2))  # int[2]
 
-        power_loss = (light & moving) * jnp.ceil(moving_light_second_max * self.env_cfg.POWER_LOSS_FACTOR).astype(units.power.dtype) \
-            + (heavy & moving) * jnp.ceil(moving_heavy_second_max * self.env_cfg.POWER_LOSS_FACTOR).astype(units.power.dtype)
+        power_loss = (light & moving) * jnp.ceil(moving_light_second_max * self.env_cfg.POWER_LOSS_FACTOR).astype(
+            units.power.dtype) + (heavy & moving) * jnp.ceil(
+                moving_heavy_second_max * self.env_cfg.POWER_LOSS_FACTOR).astype(units.power.dtype)
         power_loss = jnp.maximum(power_loss, 0)
         units = units._replace(power=units.power - power_loss)
 
@@ -1288,10 +1427,14 @@ class State(NamedTuple):
         self = self._replace(
             units=units,
             board=self.board.update_units_map(units._replace(pos=Position(pos_without_dead))),
+            stats=self.stats._replace(generation=self.stats.generation._replace(
+                friendly_kills=self.stats.generation.friendly_kills + friendly_kills,
+                opponent_kills=self.stats.generation.opponent_kills + opponent_kills,
+            )),
         )
         return self, new_dead
 
-    def add_rubble_for_dead_units(self, dead: Array) -> 'State':
+    def add_rubble_for_dead_units(self, dead: Array) -> "State":
         units = self.units
 
         # add rubble to the board, and remove lichen
@@ -1300,20 +1443,20 @@ class State(NamedTuple):
         rubble = self.board.rubble.at[(
             units.pos.x,
             units.pos.y,
-        )].add(dead * rubble_after_destruction, mode='drop')
+        )].add(dead * rubble_after_destruction, mode="drop")
         rubble = jnp.minimum(rubble, self.env_cfg.MAX_RUBBLE)
         lichen = self.board.lichen.at[(
             units.pos.x,
             units.pos.y,
-        )].min(jnp.where(dead, 0, imax(self.board.lichen.dtype)), mode='drop')
+        )].min(jnp.where(dead, 0, imax(self.board.lichen.dtype)), mode="drop")
         lichen_strains = self.board.lichen_strains.at[(
             units.pos.x,
             units.pos.y,
-        )].max(jnp.where(dead, imax(self.board.lichen_strains.dtype), -1), mode='drop')
+        )].max(jnp.where(dead, imax(self.board.lichen_strains.dtype), -1), mode="drop")
 
         # always set rubble under factories to 0.
         occupancy = self.factories.occupancy
-        rubble = rubble.at[occupancy.x, occupancy.y].set(0, mode='drop')
+        rubble = rubble.at[occupancy.x, occupancy.y].set(0, mode="drop")
 
         board = self.board._replace(
             map=self.board.map._replace(rubble=rubble),
@@ -1323,8 +1466,8 @@ class State(NamedTuple):
 
         return self._replace(board=board)
 
-    def destroy_unit(self, dead: Array) -> Tuple['State', Array]:
-        '''
+    def destroy_unit(self, dead: Array) -> Tuple["State", Array]:
+        """
         Destroy dead units, and put them into the end of the array.
 
         Args:
@@ -1333,7 +1476,7 @@ class State(NamedTuple):
         Returns:
             new_state: State, new state.
             live_idx: int[2, U], the index of live units. Only the part with self.unit_mask == True is valid.
-        '''
+        """
         unit_mask = self.unit_mask  # bool[2, U]
         units = self.units
 
@@ -1366,8 +1509,8 @@ class State(NamedTuple):
         )
         return self, live_idx
 
-    def destroy_factories(self, dead: Array) -> 'State':
-        '''
+    def destroy_factories(self, dead: Array) -> "State":
+        """
         Destroy dead factories, and put them into the end of the array.
 
         Args:
@@ -1375,7 +1518,7 @@ class State(NamedTuple):
 
         Returns:
             new_state: State.
-        '''
+        """
         factory_mask = self.factory_mask  # bool[2, F]
         factories = self.factories
 
@@ -1385,17 +1528,20 @@ class State(NamedTuple):
         rubble = self.board.rubble.at[(
             occupancy.x,
             occupancy.y,
-        )].add(dead[..., None] * self.env_cfg.FACTORY_RUBBLE_AFTER_DESTRUCTION, mode='drop')
+        )].add(dead[..., None] * self.env_cfg.FACTORY_RUBBLE_AFTER_DESTRUCTION, mode="drop")
         rubble = jnp.minimum(rubble, self.env_cfg.MAX_RUBBLE)
 
         lichen = self.board.lichen.at[(
             occupancy.x,
             occupancy.y,
-        )].min(jnp.where(dead[..., None], 0, imax(self.board.lichen.dtype)), mode='drop')
+        )].min(jnp.where(dead[..., None], 0, imax(self.board.lichen.dtype)), mode="drop")
         lichen_strains = self.board.lichen_strains.at[(
             occupancy.x,
             occupancy.y,
-        )].max(jnp.where(dead[..., None], imax(self.board.lichen_strains.dtype), -1), mode='drop')
+        )].max(
+            jnp.where(dead[..., None], imax(self.board.lichen_strains.dtype), -1),
+            mode="drop",
+        )
 
         # remove dead factories, put them into the end of the array
         is_alive = ~dead & factory_mask
@@ -1431,7 +1577,7 @@ class State(NamedTuple):
         return self
 
     def _validate_recharge_actions(self, actions: UnitAction):
-        valid = (actions.action_type == UnitActionType.RECHARGE)
+        valid = actions.action_type == UnitActionType.RECHARGE
         return valid
 
     def _handle_recharge_actions(self, actions: UnitAction, valid: Array):
@@ -1439,8 +1585,7 @@ class State(NamedTuple):
         success = valid & (self.units.power >= actions.amount)
         return self, success
 
-    def _handle_factory_water_actions(self, factory_actions: Array, color: Array, grow_lichen_size: Array) -> 'State':
-
+    def _handle_factory_water_actions(self, factory_actions: Array, color: Array, grow_lichen_size: Array) -> "State":
         H, W = self.board.lichen_strains.shape
 
         # check validity
@@ -1452,20 +1597,20 @@ class State(NamedTuple):
         new_stock = self.factories.cargo.stock.at[..., ResourceType.water].add(-water_cost)
 
         # lichen growth
-        factory_color = color.at[self.factories.pos.x, self.factories.pos.y] \
-                             .get(mode='fill', fill_value=imax(color.dtype))  # int[2, F, 2]
-        delta_lichen = jnp.zeros((H, W), dtype=Board.__annotations__['lichen'])  # int[H, W]
-        delta_lichen = delta_lichen.at[factory_color[..., 0], factory_color[..., 1]].add(valid * 2, mode='drop')
-        delta_lichen = delta_lichen.at[color[..., 0], color[..., 1]].get(mode='fill', fill_value=0)
+        factory_color = color.at[self.factories.pos.x,
+                                 self.factories.pos.y].get(mode="fill", fill_value=imax(color.dtype))  # int[2, F, 2]
+        delta_lichen = jnp.zeros((H, W), dtype=Board.__annotations__["lichen"])  # int[H, W]
+        delta_lichen = delta_lichen.at[factory_color[..., 0], factory_color[..., 1]].add(valid * 2, mode="drop")
+        delta_lichen = delta_lichen.at[color[..., 0], color[..., 1]].get(mode="fill", fill_value=0)
         factory_occupancy = self.factories.occupancy
-        delta_lichen = delta_lichen.at[factory_occupancy.x, factory_occupancy.y].set(0, mode='drop')
+        delta_lichen = delta_lichen.at[factory_occupancy.x, factory_occupancy.y].set(0, mode="drop")
         new_lichen = self.board.lichen + delta_lichen
 
         # lichen strain
-        lichen_strains = jnp.zeros((H, W), dtype=Board.__annotations__['lichen_strains'])  # int[H, W]
-        lichen_strains = lichen_strains.at[factory_color[..., 0], factory_color[..., 1]]\
-                                       .set(self.factories.unit_id, mode='drop')
-        lichen_strains = lichen_strains.at[color[..., 0], color[..., 1]].get(mode='fill', fill_value=0)
+        lichen_strains = jnp.zeros((H, W), dtype=Board.__annotations__["lichen_strains"])  # int[H, W]
+        lichen_strains = lichen_strains.at[factory_color[..., 0], factory_color[..., 1]].set(self.factories.unit_id,
+                                                                                             mode="drop")
+        lichen_strains = lichen_strains.at[color[..., 0], color[..., 1]].get(mode="fill", fill_value=0)
         new_lichen_strains = jnp.where(delta_lichen > 0, lichen_strains, self.board.lichen_strains)
 
         # update self
@@ -1502,12 +1647,15 @@ class State(NamedTuple):
         H, W = self.board.lichen_strains.shape
 
         ij = jnp.mgrid[:H, :W].astype(Position.dtype())
-        delta_ij = jnp.array([
-            [-1, 0],
-            [0, 1],
-            [1, 0],
-            [0, -1],
-        ], dtype=ij.dtype)  # int[2, H, W]
+        delta_ij = jnp.array(
+            [
+                [-1, 0],
+                [0, 1],
+                [1, 0],
+                [0, -1],
+            ],
+            dtype=ij.dtype,
+        )  # int[2, H, W]
         neighbor_ij = delta_ij[..., None, None] + ij[None, ...]  # int[4, 2, H, W]
 
         # handle map boundary.
@@ -1525,11 +1673,10 @@ class State(NamedTuple):
         neighbor_color = strains_and_factory.at[(
             neighbor_ij[:, 0],
             neighbor_ij[:, 1],
-        )].get(mode='fill', fill_value=imax(strains_and_factory.dtype))
+        )].get(mode="fill", fill_value=imax(strains_and_factory.dtype))
 
-        connect_cond = (
-            (strains_and_factory == neighbor_color) & (strains_and_factory != imax(strains_and_factory.dtype))
-        )  # bool[4, H, W]
+        connect_cond = (strains_and_factory == neighbor_color) & (strains_and_factory != imax(strains_and_factory.dtype)
+                                                                  )  # bool[4, H, W]
 
         color = jux.map_generator.flood._flood_fill(  # int[H, W, 2]
             jnp.concatenate(  # int[H, W, 5, 2]
@@ -1539,47 +1686,59 @@ class State(NamedTuple):
                 ],
                 axis=-2,
             ))
-        factory_color = color.at[self.factories.pos.x,self.factories.pos.y] \
-                             .get(mode='fill', fill_value=imax(color.dtype))  # int[2, F, 2]
+        factory_color = color.at[self.factories.pos.x,
+                                 self.factories.pos.y].get(mode="fill", fill_value=imax(color.dtype))  # int[2, F, 2]
         connected_lichen = jnp.full((H, W), fill_value=imax(Factory.id_dtype()))  # int[H, W]
-        connected_lichen = connected_lichen.at[factory_color[..., 0], factory_color[..., 1]] \
-                                           .set(self.factories.unit_id, mode='drop')
-        connected_lichen = connected_lichen.at[color[..., 0], color[..., 1]]\
-                                           .get(mode='fill', fill_value=imax(connected_lichen.dtype))
+        connected_lichen = connected_lichen.at[factory_color[..., 0], factory_color[..., 1]].set(self.factories.unit_id,
+                                                                                                 mode="drop")
+        connected_lichen = connected_lichen.at[color[..., 0], color[...,
+                                                                    1]].get(mode="fill",
+                                                                            fill_value=imax(connected_lichen.dtype))
 
         # compute connected lichen size
         connected_lichen_size = jux.map_generator.flood.component_sum(UnitCargo.dtype()(1), color)  # int[H, W]
         # -9 for the factory occupied cells
-        connected_lichen_size = connected_lichen_size[self.factories.pos.x, self.factories.pos.y] - 9  # int[2, F]
+        connected_lichen_size = (connected_lichen_size[self.factories.pos.x, self.factories.pos.y] - 9)  # int[2, F]
 
         # 2. handle cells to expand to.
         # 2.1 cells that are allowed to expand to, only if
         #   1. it is not a lichen strain, and
         #   2. it has no rubble, and
         #   3. it is not resource.
-        allow_grow = (self.board.rubble == 0) & \
-                     ~(self.board.ice | self.board.ore) & \
-                     (self.board.lichen_strains == imax(self.board.lichen_strains.dtype)) & \
-                     (self.board.factory_occupancy_map == imax(self.board.factory_occupancy_map.dtype))
+        allow_grow = ((self.board.rubble == 0)
+                      & ~(self.board.ice | self.board.ore)
+                      & (self.board.lichen_strains == imax(self.board.lichen_strains.dtype))
+                      & (self.board.factory_occupancy_map == imax(self.board.factory_occupancy_map.dtype)))
 
         # 2.2 when a non-lichen cell connects two different strains, then it is not allowed to expand to.
         neighbor_lichen_strain = strains_and_factory[neighbor_ij[:, 0], neighbor_ij[:, 1]]  # int[4, H, W]
         neighbor_is_lichen = neighbor_lichen_strain != imax(neighbor_lichen_strain.dtype)
-        center_connects_two_different_strains = (strains_and_factory == imax(strains_and_factory.dtype)) & ( \
-            ((neighbor_lichen_strain[0] != neighbor_lichen_strain[1]) & neighbor_is_lichen[0] & neighbor_is_lichen[1]) | \
-            ((neighbor_lichen_strain[0] != neighbor_lichen_strain[2]) & neighbor_is_lichen[0] & neighbor_is_lichen[2]) | \
-            ((neighbor_lichen_strain[0] != neighbor_lichen_strain[3]) & neighbor_is_lichen[0] & neighbor_is_lichen[3]) | \
-            ((neighbor_lichen_strain[1] != neighbor_lichen_strain[2]) & neighbor_is_lichen[1] & neighbor_is_lichen[2]) | \
-            ((neighbor_lichen_strain[1] != neighbor_lichen_strain[3]) & neighbor_is_lichen[1] & neighbor_is_lichen[3]) | \
-            ((neighbor_lichen_strain[2] != neighbor_lichen_strain[3]) & neighbor_is_lichen[2] & neighbor_is_lichen[3]) \
-        )
+        center_connects_two_different_strains = (strains_and_factory == imax(strains_and_factory.dtype)) & (
+            ((neighbor_lichen_strain[0] != neighbor_lichen_strain[1])
+             & neighbor_is_lichen[0]
+             & neighbor_is_lichen[1])
+            | ((neighbor_lichen_strain[0] != neighbor_lichen_strain[2])
+               & neighbor_is_lichen[0]
+               & neighbor_is_lichen[2])
+            | ((neighbor_lichen_strain[0] != neighbor_lichen_strain[3])
+               & neighbor_is_lichen[0]
+               & neighbor_is_lichen[3])
+            | ((neighbor_lichen_strain[1] != neighbor_lichen_strain[2])
+               & neighbor_is_lichen[1]
+               & neighbor_is_lichen[2])
+            | ((neighbor_lichen_strain[1] != neighbor_lichen_strain[3])
+               & neighbor_is_lichen[1]
+               & neighbor_is_lichen[3])
+            | ((neighbor_lichen_strain[2] != neighbor_lichen_strain[3])
+               & neighbor_is_lichen[2]
+               & neighbor_is_lichen[3]))
         allow_grow = allow_grow & ~center_connects_two_different_strains
 
         # 2.3 calculate the strains id, if it is expanded to.
-        expand_center = (connected_lichen != imax(connected_lichen.dtype)) & \
-                        (self.board.lichen >= self.env_cfg.MIN_LICHEN_TO_SPREAD)
+        expand_center = (connected_lichen != imax(connected_lichen.dtype)) & (self.board.lichen >=
+                                                                              self.env_cfg.MIN_LICHEN_TO_SPREAD)
         factory_occupancy = self.factories.occupancy
-        expand_center = expand_center.at[factory_occupancy.x, factory_occupancy.y].set(True, mode='drop')
+        expand_center = expand_center.at[factory_occupancy.x, factory_occupancy.y].set(True, mode="drop")
         expand_center = jnp.where(expand_center, connected_lichen, imax(connected_lichen.dtype))
         INT_MAX = imax(expand_center.dtype)
         strain_id_if_expand = jnp.minimum(  # int[H, W]
@@ -1598,30 +1757,34 @@ class State(NamedTuple):
         strain_id = jnp.minimum(connected_lichen, strain_id_if_expand)  # int[H, W]
         factory_idx = self.factory_id2idx[strain_id]  # int[2, H, W]
         color = self.factories.pos.pos[factory_idx[..., 0], factory_idx[..., 1]]  # int[H, W, 2]
-        color = jnp.where((strain_id == imax(strain_id.dtype))[..., None], ij.transpose(1, 2, 0), color)
+        color = jnp.where(
+            (strain_id == imax(strain_id.dtype))[..., None],
+            ij.transpose(1, 2, 0),
+            color,
+        )
 
         # 4. grow_lichen_size
         cmp_cnt = jux.map_generator.flood.component_sum(UnitCargo.dtype()(1), color)  # int[H, W]
         # -9 for the factory occupied cells
-        grow_lichen_size = cmp_cnt[self.factories.pos.x, self.factories.pos.y] - 9  # int[2, F]
+        grow_lichen_size = (cmp_cnt[self.factories.pos.x, self.factories.pos.y] - 9)  # int[2, F]
 
         return color, grow_lichen_size, connected_lichen_size
 
-    def _mars_quake(self) -> 'State':
+    def _mars_quake(self) -> "State":
         return self.add_rubble_for_dead_units(self.unit_mask)
 
-    def team_lichen_score(self: 'State') -> Array:
+    def team_lichen_score(self: "State") -> Array:
         factory_id2idx = self.generate_factory_id2idx(
             self.factories._replace(unit_id=self.teams.factory_strains),
             self.MAX_N_FACTORIES,
         )
 
         factory_lichen = jnp.zeros(factory_id2idx.shape[0], dtype=self.board.lichen.dtype)  # int[2 * F]
-        factory_lichen = factory_lichen.at[self.board.lichen_strains].add(self.board.lichen, mode='drop')  # int[2 * F]
+        factory_lichen = factory_lichen.at[self.board.lichen_strains].add(self.board.lichen, mode="drop")  # int[2 * F]
         self.teams.factory_strains
-        lichen_score = jnp.zeros((2, self.MAX_N_FACTORIES), dtype=factory_lichen.dtype).at[(
+        lichen_score = (jnp.zeros((2, self.MAX_N_FACTORIES), dtype=factory_lichen.dtype).at[(
             factory_id2idx[..., 0],
             factory_id2idx[..., 1],
-        )].set(factory_lichen, mode='drop')
+        )].set(factory_lichen, mode="drop"))
 
         return lichen_score.sum(-1)  # int[2]

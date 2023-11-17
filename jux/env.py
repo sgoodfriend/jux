@@ -6,9 +6,11 @@ import jax.numpy as jnp
 from jax import Array
 from luxai_s2 import LuxAI_S2
 
+from jux import stats
 from jux.actions import JuxAction
 from jux.config import EnvConfig, JuxBufferConfig
 from jux.state import State
+from jux.unified_actions import UnifiedAction
 
 
 class JuxEnv:
@@ -47,6 +49,7 @@ class JuxEnv:
             dones (Array): bool[2], done indicator. If game ends, then `dones[0] == dones[1] == True`
             infos (Dict): empty dict, because there is no extra info.
         """
+        old_stats = state.stats
         state = state._step_bid(bid, faction)
 
         # perfect info game, so observations = state
@@ -55,7 +58,7 @@ class JuxEnv:
             'player_1': state,
         }
         rewards = jnp.zeros(2)
-        infos = {'player_0': {}, 'player_1': {}}
+        infos = infos_from_state(state, old_stats)
 
         dones = jnp.zeros(2, dtype=jnp.bool_)
 
@@ -86,12 +89,13 @@ class JuxEnv:
             dones (Array): bool[2], done indicator. If game ends, then `dones[0] == dones[1] == True`
             infos (Dict): empty dict, because there is no extra info.
         """
+        old_stats = state.stats
         state = state._step_factory_placement(spawn, water, metal)
 
         # perfect info game, so observations = state
         observations = {'player_0': state, 'player_1': state}
         rewards = jnp.zeros(2)
-        infos = {'player_0': {}, 'player_1': {}}
+        infos = infos_from_state(state, old_stats)
 
         dones = jnp.zeros(2, dtype=jnp.bool_)
 
@@ -138,13 +142,14 @@ class JuxEnv:
             dones (Array): bool[2], done indicator. If game ends, then `dones[0] == dones[1] == True`
             infos (Dict): empty dict, because there is no extra info.
         """
+        old_stats = state.stats
         state = state._step_late_game(actions)
 
         # perfect info game, so observations = state
         observations = {'player_0': state, 'player_1': state}
 
         # info is empty
-        infos = {'player_0': {}, 'player_1': {}}
+        infos = infos_from_state(state, old_stats)
 
         # done if one player loses all factories or max_episode_length is reached
         dones = (state.n_factories == 0).any() | (state.real_env_steps >= self.env_cfg.max_episode_length)
@@ -153,6 +158,19 @@ class JuxEnv:
         # rewards = lichen, unless if player loses all factories, then -1000
         rewards = jnp.where(jnp.logical_and(dones, state.n_factories == 0), -1000, state.team_lichen_score())
 
+        return state, (observations, rewards, dones, infos)
+
+    @partial(jax.jit, static_argnums=(0, ))
+    def step_unified(self, state: State, actions: UnifiedAction) -> Tuple[State, Tuple[Dict, Array, Array, Dict]]:
+        old_stats = state.stats
+        state = state._step_unified(actions)
+        observations = {'player_0': state, 'player_1': state}
+        dones = jnp.logical_or(
+            jnp.logical_and(state.n_factories == 0, state.teams.factories_to_place == 0).any(),
+            state.real_env_steps >= self.env_cfg.max_episode_length)
+        rewards = jnp.where(jnp.logical_and(dones, state.n_factories == 0), -1000, state.team_lichen_score())
+        infos = infos_from_state(state, old_stats)
+        dones = jnp.array([dones, dones])
         return state, (observations, rewards, dones, infos)
 
     def render(self, state: State, mode='human', **kwargs):
@@ -185,6 +203,14 @@ class JuxEnv:
         return JuxEnv(EnvConfig.from_lux(lux_env.env_cfg), buf_cfg), State.from_lux(lux_env.state, buf_cfg)
 
 
+@jax.jit
+def infos_from_state(state: State, old_stats: stats) -> Dict:
+    return {
+        "stats": state.stats,
+        "delta_stats": jax.tree_util.tree_map(lambda new_a, old_a: new_a - old_a, state.stats, old_stats),
+    }
+
+
 class JuxEnvBatch:
 
     @property
@@ -204,14 +230,15 @@ class JuxEnvBatch:
     def __eq__(self, __o: object) -> bool:
         return isinstance(__o, JuxEnvBatch) and self.env_cfg == __o.env_cfg and self.buf_cfg == __o.buf_cfg
 
-    @partial(jax.jit, static_argnums=(0, ))
-    def reset(self, seeds: Array) -> Tuple[State, Tuple[Dict, int, bool, Dict]]:
+    @partial(jax.jit, static_argnums=(0, 2))
+    def reset(self, seeds: Array, same_factories_per_team: bool = True) -> Tuple[State, Tuple[Dict, int, bool, Dict]]:
         states = jax.vmap(self.jux_env.reset)(seeds)
 
-        # for env in the same batch, they must have same state.board.factories_per_team,
-        # so that they have same number of steps to place factory
-        factories_per_team = states.board.factories_per_team.at[:].set(states.board.factories_per_team[0])
-        states = states._replace(board=states.board._replace(factories_per_team=factories_per_team))
+        if same_factories_per_team:
+            # If same_factories_per_team True, set same
+            # state.board.factories_per_team. Necessary if not using step_uniform
+            factories_per_team = states.board.factories_per_team.at[:].set(states.board.factories_per_team[0])
+            states = states._replace(board=states.board._replace(factories_per_team=factories_per_team))
         return states
 
     @partial(jax.jit, static_argnums=(0, ))
@@ -233,4 +260,9 @@ class JuxEnvBatch:
     @partial(jax.jit, static_argnums=(0, ))
     def step_late_game(self, states: State, actions: JuxAction) -> Tuple[State, Tuple[Dict, Array, Array, Dict]]:
         states, (observations, rewards, dones, infos) = jax.vmap(self.jux_env.step_late_game)(states, actions)
+        return states, (observations, rewards, dones, infos)
+
+    @partial(jax.jit, static_argnums=(0, ))
+    def step_unified(self, states: State, actions: UnifiedAction) -> Tuple[State, Tuple[Dict, Array, Array, Dict]]:
+        states, (observations, rewards, dones, infos) = jax.vmap(self.jux_env.step_unified)(states, actions)
         return states, (observations, rewards, dones, infos)
