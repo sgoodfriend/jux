@@ -23,6 +23,7 @@ classifiers = [
 dependencies = [
     "luxai-s2==3.0.1",
 #    "jax[cuda11_cudnn82]==0.4.7", # Must be installed separately
+    "jaxlib==0.4.7",
     "jax==0.4.7",
     "chex",
 ]
