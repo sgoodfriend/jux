@@ -27,7 +27,7 @@ dependencies = [
     "jax==0.4.7",
     "chex",
 ]
-dynamic = ["version"]
+version = "3.0.1"
 
 [project.urls]
 repository = "https://github.com/RoboEden/jux"
@@ -49,7 +49,6 @@ dev = [
     "isort",
     "autoflake",
     "yapf",
-    "bump2version",
     "rich",
     "pandas",
     "ipywidgets>=7.0,<8.0",
@@ -57,9 +56,6 @@ dev = [
     "build",
     "twine",
 ]
-
-[tool.setuptools.dynamic]
-version = { attr = "jux.__version__" }
 
 [tool.setuptools_scm]
 
